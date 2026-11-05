@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Collections;
@@ -23,8 +23,29 @@ namespace Game.Entities
 {
     public partial class Player
     {
+        void LoadExploredZones(string saved)
+        {
+            StringArray words = new(saved, ' ');
+            for (int i = 0; i < words.Length && i / 2 < PlayerConst.ExploredZonesSize; ++i)
+                SetUpdateFieldFlagValue(ref m_values.ModifyValue(m_activePlayerData).ModifyValue(m_activePlayerData.ExploredZones, i / 2),
+                    (ulong)(long.Parse(words[i]) << (32 * (i % 2))));
+        }
+
+        string GetExploredZonesForSave()
+        {
+            StringBuilder saved = new();
+            for (int i = 0; i < PlayerConst.ExploredZonesSize; ++i)
+                saved.Append($"{(uint)m_activePlayerData.ExploredZones[i]} {(uint)(m_activePlayerData.ExploredZones[i] >> 32)} ");
+            return saved.ToString();
+        }
+
         void _LoadInventory(SQLResult result, Seconds timeDiff)
         {
+            // Saved bonus slots must remain available while their items are loaded.
+            // Reconcile current entitlement after LoadFromDB, once auras and inventory are ready.
+            if (GetInventorySlotCount() < InventorySlots.DefaultSize)
+                UpdateInventorySlotCount();
+
             if (!result.IsEmpty())
             {
                 var zoneId = GetZoneId();
@@ -76,6 +97,8 @@ namespace Game.Entities
                                 if (err == InventoryResult.Ok)
                                     item = BankItem(dest, item, true);
                             }
+                            else
+                                err = InventoryResult.WrongSlot;
 
                             // Remember bags that may contain items in them
                             if (err == InventoryResult.Ok)
@@ -100,7 +123,11 @@ namespace Game.Entities
                             var bag = bagMap.LookupByKey(bagGuid);
                             if (bag != null)
                             {
-                                err = CanStoreItem(new(slot, bag.InventorySlot), out var dest, item);
+                                ItemPos storedPosition = new(slot, bag.InventorySlot);
+                                List<ItemPosCount> dest;
+                                err = storedPosition.IsBankPos
+                                    ? CanBankItem(storedPosition, out dest, item, false, false)
+                                    : CanStoreItem(storedPosition, out dest, item);
                                 if (err == InventoryResult.Ok)
                                     item = StoreItem(dest, item, true);
                             }
@@ -140,7 +167,7 @@ namespace Game.Entities
                 // Send problematic items by mail
                 while (problematicItems.Count != 0)
                 {
-                    string subject = Global.ObjectMgr.GetCypherString(CypherStrings.NotEquippedItem);
+                    string subject = Global.ObjectMgr.GetForeverString(ForeverStrings.NotEquippedItem);
                     MailDraft draft = new(subject, "There were problems with equipping item(s).");
                     for (int i = 0; problematicItems.Count != 0 && i < SharedConst.MaxMailItems; ++i)
                     {
@@ -384,9 +411,9 @@ namespace Game.Entities
             {
                 LearnSkillRewardedSpells(skillId, skillValue, race);
 
-                // enable parent skill line if missing
+                // enable parent skill line if missing (Classic 1.60, TC: never from a profession child line)
                 var skillEntry = CliDB.SkillLineStorage.LookupByKey(skillId);
-                if (skillEntry.ParentSkillLineID != 0 && skillEntry.ParentTierIndex > 0 && GetSkillStep(skillEntry.ParentSkillLineID) < skillEntry.ParentTierIndex)
+                if (skillEntry.ParentSkillLineID != 0 && !IsClassicProfessionChildSkill(skillEntry) && skillEntry.ParentTierIndex > 0 && GetSkillStep(skillEntry.ParentSkillLineID) < skillEntry.ParentTierIndex)
                 {
                     var rcEntry = Global.DB2Mgr.GetSkillRaceClassInfo(skillEntry.ParentSkillLineID, GetRace(), GetClass());
                     if (rcEntry != null)
@@ -415,6 +442,10 @@ namespace Game.Entities
                     }
                 }
             }
+
+            // Classic 1.60: profession child lines (the recipe lists) carry the profession's rank
+            foreach (var skillId in loadedSkillValues.Keys.ToList())
+                SyncClassicProfessionChildSkills(skillId);
 
             foreach (var skill in loadedProfessionsWithoutSlot)
             {
@@ -578,9 +609,18 @@ namespace Game.Entities
                 var map = CliDB.MapStorage.LookupByKey(homebind.GetMapId());
 
                 // accept saved data only for valid position (and non instanceable), and accessable
-                if (GridDefines.IsValidMapCoord(homebind) &&
+                if (map != null && GridDefines.IsValidMapCoord(homebind) &&
                     !map.Instanceable && GetSession().GetExpansion() >= map.Expansion)
+                {
                     ok = true;
+                    // Older characters could have a valid bind position with an uninitialized area.
+                    if (!CliDB.AreaTableStorage.ContainsKey(homebindAreaId))
+                    {
+                        int areaId = Global.TerrainMgr.GetAreaId(PhasingHandler.EmptyPhaseShift, homebind);
+                        if (CliDB.AreaTableStorage.ContainsKey(areaId))
+                            SetHomebind(homebind, areaId);
+                    }
+                }
                 else
                 {
                     PreparedStatement stmt = CharacterDatabase.GetPreparedStatement(CharStatements.DEL_PLAYER_HOMEBIND);
@@ -588,19 +628,6 @@ namespace Game.Entities
                     DB.Characters.Execute(stmt);
                 }
             }
-
-            void saveHomebindToDb()
-            {
-                PreparedStatement stmt = CharacterDatabase.GetPreparedStatement(CharStatements.INS_PLAYER_HOMEBIND);
-                stmt.SetInt64(0, GetGUID().GetCounter());
-                stmt.SetInt32(1, homebind.GetMapId());
-                stmt.SetInt32(2, homebindAreaId);
-                stmt.SetFloat(3, homebind.GetPositionX());
-                stmt.SetFloat(4, homebind.GetPositionY());
-                stmt.SetFloat(5, homebind.GetPositionZ());
-                stmt.SetFloat(6, homebind.GetOrientation());
-                DB.Characters.Execute(stmt);
-            };
 
             if (!ok && HasAtLoginFlag(AtLoginFlags.FirstLogin))
             {
@@ -611,7 +638,7 @@ namespace Game.Entities
                     homebind.WorldRelocate(createPosition.Loc);
                     homebindAreaId = Global.TerrainMgr.GetAreaId(PhasingHandler.EmptyPhaseShift, homebind);
 
-                    saveHomebindToDb();
+                    _SaveHomeBind();
                     ok = true;
                 }
             }
@@ -622,19 +649,35 @@ namespace Game.Entities
                 if (loc == null && GetRace() == Race.PandarenNeutral)
                     loc = Global.ObjectMgr.GetWorldSafeLoc(3295); // The Wandering Isle, Starting Area GY
 
-                Cypher.Assert(loc != null, 
+                Forever.Assert(loc != null, 
                     $"Missing fallback graveyard location for faction {GetBatttleGroundTeamId()}");
 
                 homebind.WorldRelocate(loc.Loc);
                 homebindAreaId = Global.TerrainMgr.GetAreaId(PhasingHandler.EmptyPhaseShift, loc.Loc);
 
-                saveHomebindToDb();
+                _SaveHomeBind();
             }
 
             Log.outDebug(LogFilter.Player,
                 $"Setting player home position - mapid: {homebind.GetMapId()}, areaid: {homebindAreaId}, {homebind}");
 
             return true;
+        }
+
+        void _SaveHomeBind(SQLTransaction transaction = null)
+        {
+            PreparedStatement stmt = CharacterDatabase.GetPreparedStatement(CharStatements.INS_PLAYER_HOMEBIND);
+            stmt.SetInt64(0, GetGUID().GetCounter());
+            stmt.SetInt32(1, homebind.GetMapId());
+            stmt.SetInt32(2, homebindAreaId);
+            stmt.SetFloat(3, homebind.GetPositionX());
+            stmt.SetFloat(4, homebind.GetPositionY());
+            stmt.SetFloat(5, homebind.GetPositionZ());
+            stmt.SetFloat(6, homebind.GetOrientation());
+            if (transaction != null)
+                transaction.Append(stmt);
+            else
+                DB.Characters.Execute(stmt);
         }
 
         void _LoadCurrency(SQLResult result)
@@ -670,13 +713,17 @@ namespace Game.Entities
             SendActionButtons(ActionsButtonsUpdateReason.AfterSpecSwap);
         }
 
-        void _LoadActions(SQLResult result)
+        void _LoadActions(SQLResult result, bool allConfigurations = false)
         {
             m_actionButtons.Clear();
+            uint traitConfigId = allConfigurations ? GetActionBarTraitConfigId() : 0;
             if (!result.IsEmpty())
             {
                 do
                 {
+                    if (allConfigurations && (result.Read<byte>(3) != GetActiveTalentGroup() || result.Read<uint>(4) != traitConfigId))
+                        continue;
+
                     byte button = result.Read<byte>(0);
                     int action = result.Read<int>(1);
                     ActionButtonType type = (ActionButtonType)result.Read<byte>(2);
@@ -1174,15 +1221,31 @@ namespace Game.Entities
                     && (traitConfig.CombatConfigFlags & (int)TraitCombatConfigFlags.ActiveForSpec) != 0;
             });
 
+            // Classic 1.60 dual spec: talent group 1 is the config flagged SecondarySpec
+            if (GetActiveTalentGroup() == 1)
+            {
+                TraitConfig secondaryConfig = GetClassicSpecGroupConfig(true);
+                if (secondaryConfig != null)
+                    activeConfig = m_activePlayerData.TraitConfigs.FindIndexIf(traitConfig => traitConfig.ID == secondaryConfig.ID);
+                else
+                    SetActiveTalentGroup(0);
+            }
+
             if (activeConfig >= 0)
                 SetActiveCombatTraitConfigID(m_activePlayerData.TraitConfigs[activeConfig].ID);
 
+            ApplyLoadedTraitConfigs();
+        }
+
+        void ApplyLoadedTraitConfigs()
+        {
             foreach (TraitConfig traitConfig in m_activePlayerData.TraitConfigs)
             {
                 switch ((TraitConfigType)(int)traitConfig.Type)
                 {
                     case TraitConfigType.Combat:
-                        if (traitConfig.ID != m_activePlayerData.ActiveCombatTraitConfigID)
+                        // These are separate UpdateField<int> objects; compare their stored IDs.
+                        if (traitConfig.ID.GetValue() != m_activePlayerData.ActiveCombatTraitConfigID.GetValue())
                             continue;
                         break;
                     case TraitConfigType.Profession:
@@ -1229,7 +1292,7 @@ namespace Game.Entities
                 if (glyphId==0)
                     continue;
                 var glyphProperty = CliDB.GlyphPropertiesStorage.LookupByKey(glyphId);
-                Cypher.Assert(glyphProperty != null);
+                Forever.Assert(glyphProperty != null);
 
                 CastSpell(this, glyphProperty.SpellID, true);
             }
@@ -2666,7 +2729,7 @@ namespace Game.Entities
             stmt.SetInt32(index++, m_unitData.AttackPower);
             stmt.SetInt32(index++, m_unitData.RangedAttackPower);
             stmt.SetInt32(index++, GetBaseSpellPowerBonus());
-            stmt.SetInt32(index, 0); // m_activePlayerData.CombatRatings[(int)CombatRating.ResiliencePlayerDamage]);
+            stmt.SetInt32(index++, 0); // m_activePlayerData.CombatRatings[(int)CombatRating.ResiliencePlayerDamage]);
             stmt.SetFloat(index++, m_activePlayerData.Mastery);
             stmt.SetInt32(index++, m_activePlayerData.Versatility);
 
@@ -2929,7 +2992,7 @@ namespace Game.Entities
             var orientation = result.Read<float>(fieldIndex++);
             var taximask = result.Read<string>(fieldIndex++);
             var createTime = (UnixTime64)result.Read<long>(fieldIndex++);
-            var createMode = (PlayerCreateMode)result.Read<byte>(fieldIndex++);
+            m_createMode = (PlayerCreateMode)result.Read<byte>(fieldIndex++);
             var cinematic = result.Read<byte>(fieldIndex++);
             var totaltime = (Seconds)result.Read<int>(fieldIndex++);
             var leveltime = (Seconds)result.Read<int>(fieldIndex++);
@@ -2947,7 +3010,7 @@ namespace Game.Entities
             var transguid = result.Read<long>(fieldIndex++);
             var extra_flags = (PlayerExtraFlags)result.Read<ushort>(fieldIndex++);
             var summonedPetNumber = result.Read<int>(fieldIndex++);
-            var atLoginFlags = (AtLoginFlags)result.Read<ushort>(fieldIndex++);
+            atLoginFlags = (AtLoginFlags)result.Read<ushort>(fieldIndex++);
             var zone = result.Read<ushort>(fieldIndex++);
             var online = result.Read<byte>(fieldIndex++);
             var death_expire_time = (UnixTime64)result.Read<long>(fieldIndex++);
@@ -3003,28 +3066,17 @@ namespace Game.Entities
             }
 
             _Create(guid);
+            InitializeGuildClubMemberId();
 
-            if (GetSession().IsServerControlled)
+            string surname=Global.CharacterCacheStorage.GetCharacterSurnameByGuid(guid);
+            name=siPlayer.NormalizeStoredName(name,surname);
+            SetName(name);SetSurname(surname);
+            // Client fields and database columns carry the two name parts separately.
+            if (ObjectManager.CheckPlayerName(GetFirstName(),GetSession().GetSessionDbcLocale())!=ResponseCodes.CharNameSuccess ||
+                (!GetSession().HasPermission(RBACPermissions.SkipCheckCharacterCreationReservedname)&&Global.ObjectMgr.IsReservedName(GetFirstName())))
             {
-                string normalized = siPlayer.NormalizeStoredName(name, Global.CharacterCacheStorage.GetCharacterSurnameByGuid(guid));
-                if (normalized != name)
-                {
-                    var existing = Global.CharacterCacheStorage.GetCharacterCacheByName(normalized);
-                    if (existing != null && existing.Guid != guid) return FailLoad("Normalized SI first name is already in use.");
-                    name = normalized;
-                    Global.CharacterCacheStorage.UpdateCharacterData(guid, name);
-                }
-            }
-            SetName(name);
-
-            // check name limitations
-            if (ObjectManager.CheckPlayerName(GetName(), GetSession().GetSessionDbcLocale()) != ResponseCodes.CharNameSuccess ||
-                (!GetSession().HasPermission(RBACPermissions.SkipCheckCharacterCreationReservedname) && Global.ObjectMgr.IsReservedName(GetName())))
-            {
-                PreparedStatement stmt = CharacterDatabase.GetPreparedStatement(CharStatements.UPD_ADD_AT_LOGIN_FLAG);
-                stmt.SetUInt16(0, (ushort)AtLoginFlags.Rename);
-                stmt.SetInt64(1, guid.GetCounter());
-                DB.Characters.Execute(stmt);
+                PreparedStatement stmt=CharacterDatabase.GetPreparedStatement(CharStatements.UPD_ADD_AT_LOGIN_FLAG);
+                stmt.SetUInt16(0,(ushort)AtLoginFlags.Rename);stmt.SetInt64(1,guid.GetCounter());DB.Characters.Execute(stmt);
                 return FailLoad("character name requires a rename");
             }
 
@@ -3054,9 +3106,7 @@ namespace Game.Entities
             SetLevel(level);
             SetXP(xp);
 
-            StringArray exploredZonesStrings = new(exploredZones, ' ');
-            for (int i = 0; i < exploredZonesStrings.Length && i / 2 < ActivePlayerData.ExploredZonesSize; ++i)
-                SetUpdateFieldFlagValue(ref m_values.ModifyValue(m_activePlayerData).ModifyValue(m_activePlayerData.ExploredZones, i / 2), (ulong)((long.Parse(exploredZonesStrings[i])) << (32 * (i % 2))));
+            LoadExploredZones(exploredZones);
 
             StringArray knownTitlesStrings = new(knownTitles, ' ');
             if ((knownTitlesStrings.Length % 2) == 0)
@@ -3333,7 +3383,7 @@ namespace Game.Entities
                     var nodeEntry = CliDB.TaxiNodesStorage.LookupByKey(nodeid);
                     if (nodeEntry != null && nodeEntry.ContinentID == GetMapId())
                     {
-                        Cypher.Assert(nodeEntry != null);                                  // checked in m_taxi.LoadTaxiDestinationsFromString
+                        Forever.Assert(nodeEntry != null);                                  // checked in m_taxi.LoadTaxiDestinationsFromString
                         mapId = nodeEntry.ContinentID;
                         Relocate(nodeEntry.Pos.X, nodeEntry.Pos.Y, nodeEntry.Pos.Z, 0.0f);
                     }
@@ -3450,7 +3500,6 @@ namespace Game.Entities
                 SetDrunkValue(0);
 
             m_createTime = (ServerTime)createTime;
-            m_createMode = createMode;
             m_cinematic = cinematic;
             m_PlayedTimeTotal = totaltime;
             m_PlayedTimeLevel = leveltime;
@@ -3492,6 +3541,9 @@ namespace Game.Entities
             SetNumRespecs(numRespecs);
             SetActiveTalentGroup(activeTalentGroup);
             SetBonusTalentGroupCount(bonusTalentGroups);
+            // Classic 1.60: the class's single specialization owns the talent trait configs; without it no combat config
+            // becomes active and the client cannot apply talents. It is not stored, every character uses it.
+            SetPrimarySpecialization(GetDefaultSpecId());
 
             ChrSpecializationRecord chrSpec = CliDB.ChrSpecializationStorage.LookupByKey((int)lootSpecId);
             if (chrSpec != null)
@@ -3539,7 +3591,9 @@ namespace Game.Entities
             // must be before inventory (some items required reputation check)
             reputationMgr.LoadFromDB(holder.GetResult(PlayerLoginQueryLoad.Reputation));
 
+            LoadClassicBankTabs(holder.GetResult(PlayerLoginQueryLoad.BankTabs));
             _LoadInventory(holder.GetResult(PlayerLoginQueryLoad.Inventory), time_diff);
+            GrantClassicFreeBankTab();
 
             if (IsVoidStorageUnlocked())
                 _LoadVoidStorage(holder.GetResult(PlayerLoginQueryLoad.VoidStorage));
@@ -3547,7 +3601,9 @@ namespace Game.Entities
             // update items with duration and realtime
             UpdateItemDuration(time_diff, true);
 
-            StartLoadingActionButtons();
+            // Populate the initialization packet before sending any login packets. A later spec-swap
+            // callback otherwise sends an empty initial bar and can discard unfamiliar starting spells.
+            _LoadActions(holder.GetResult(PlayerLoginQueryLoad.Actions), true);
 
             // unread mails and next delivery time, actual mails not loaded
             _LoadMail(holder.GetResult(PlayerLoginQueryLoad.Mails), holder.GetResult(PlayerLoginQueryLoad.MailItems));
@@ -3600,6 +3656,7 @@ namespace Game.Entities
                 SetUpdateFieldValue(ref m_values.ModifyValue(m_unitData).ModifyValue(m_unitData.Power, loadedPowers), 0);
 
             SetUsedAmmoId(usedAmmoID);
+            AutoSelectAmmo();
 
             Log.outDebug(LogFilter.Player, 
                 $"Player.LoadFromDB: The value of player {GetName()} after load item and aura is: ");            
@@ -3724,7 +3781,7 @@ namespace Game.Entities
 
             // Pure SI history must survive logout during a pending far transfer,
             // even when location serialization is deliberately deferred below.
-            if(this is siPlayer autonomous)autonomous.AppendQuestHistory(characterTransaction);
+            AppendQuestHistory(characterTransaction);
 
             //lets allow only players in world to be saved
             if (IsBeingTeleportedFar())
@@ -3758,7 +3815,8 @@ namespace Game.Entities
                 stmt = CharacterDatabase.GetPreparedStatement(CharStatements.INS_CHARACTER);
                 stmt.SetInt64(index++, GetGUID().GetCounter());
                 stmt.SetUInt32(index++, unchecked((uint)GetSession().GetAccountId()));
-                stmt.SetString(index++, GetName());
+                stmt.SetString(index++, GetFirstName());
+                stmt.SetString(index++, GetSurname());
                 stmt.SetUInt8(index++, (byte)GetRace());
                 stmt.SetUInt8(index++, (byte)GetClass());
                 stmt.SetUInt8(index++, (byte)GetNativeGender());   // save gender from PLAYER_BYTES_3, UNIT_BYTES_0 changes with every transform effect
@@ -3832,11 +3890,7 @@ namespace Game.Entities
                 stmt.SetUInt32(index++, GetSession().GetLatency());
                 stmt.SetInt32(index++, (int)GetLootSpecId());
 
-                ss.Clear();
-                for (int i = 0; i < PlayerConst.ExploredZonesSize; ++i)
-                    ss.Append($"{(uint)(m_activePlayerData.ExploredZones[i] & 0xFFFFFFFF)} {(uint)((m_activePlayerData.ExploredZones[i] >> 32) & 0xFFFFFFFF)} ");
-
-                stmt.SetString(index++, ss.ToString());
+                stmt.SetString(index++, GetExploredZonesForSave());
 
                 ss.Clear();
                 // cache equipment...
@@ -3873,7 +3927,8 @@ namespace Game.Entities
             {
                 // Update query
                 stmt = CharacterDatabase.GetPreparedStatement(CharStatements.UPD_CHARACTER);
-                stmt.SetString(index++, GetName());
+                stmt.SetString(index++, GetFirstName());
+                stmt.SetString(index++, GetSurname());
                 stmt.SetUInt8(index++, (byte)GetRace());
                 stmt.SetUInt8(index++, (byte)GetClass());
                 stmt.SetUInt8(index++, (byte)GetNativeGender());   // save gender from PLAYER_BYTES_3, UNIT_BYTES_0 changes with every transform effect
@@ -3968,11 +4023,7 @@ namespace Game.Entities
                 stmt.SetUInt32(index++, GetSession().GetLatency());
                 stmt.SetUInt32(index++, (uint)GetLootSpecId());
 
-                ss.Clear();
-                for (int i = 0; i < PlayerConst.ExploredZonesSize; ++i)
-                    ss.Append($"{(uint)(m_activePlayerData.ExploredZones[i] & 0xFFFFFFFF)} {(uint)((m_activePlayerData.ExploredZones[i] >> 32) & 0xFFFFFFFF)} ");
-
-                stmt.SetString(index++, ss.ToString());
+                stmt.SetString(index++, GetExploredZonesForSave());
 
                 ss.Clear();
                 // cache equipment...
@@ -4040,9 +4091,12 @@ namespace Game.Entities
             _SaveGlyphs(characterTransaction);
             _SaveTalents(characterTransaction);
             _SaveTraits(characterTransaction);
+            SaveClassicBankTabs(characterTransaction);
             _SaveSpells(characterTransaction);
             GetSpellHistory().SaveToDB<Player>(characterTransaction);
             _SaveActions(characterTransaction);
+            if (create)
+                _SaveHomeBind(characterTransaction);
             _SaveAuras(characterTransaction);
             _SaveSkills(characterTransaction);
             _SaveStoredAuraTeleportLocations(characterTransaction);
@@ -4078,7 +4132,7 @@ namespace Game.Entities
             stmt.SetUInt8(1, Global.WorldMgr.GetRealmId().Region);
             stmt.SetUInt8(2, Global.WorldMgr.GetRealmId().Site);
             stmt.SetInt32(3, Global.WorldMgr.GetRealmId().Index);
-            stmt.SetString(4, GetName());
+            stmt.SetString(4, GetFirstName());
             stmt.SetInt64(5, GetGUID().GetCounter());
             stmt.SetInt32(6, LoopTime.UnixServerTime);
             loginTransaction.Append(stmt);

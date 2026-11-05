@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -110,6 +110,7 @@ namespace Game.Entities
             m_speed_rate[(int)mtype] = rate;
 
             PropagateSpeedChange();
+            RefreshSISplineSpeed(mtype);
 
             // Spline packets are for creatures and move_update are for players
             ServerOpcodes[,] moveTypeToOpcode = new ServerOpcodes[(int)UnitMoveType.Max, 3]
@@ -129,7 +130,8 @@ namespace Game.Entities
             {
                 // register forced speed changes for WorldSession.HandleForceSpeedChangeAck
                 // and do it only for real sent packets and use run for run/mounted as client expected
-                ++ToPlayer().m_forced_speed_changes[(int)mtype];
+                if(!ToPlayer().GetSession().IsServerControlled)
+                    ++ToPlayer().m_forced_speed_changes[(int)mtype];
 
                 if (!IsInCombat())
                 {
@@ -151,7 +153,7 @@ namespace Game.Entities
 
                 // Send notification to other players
                 MoveUpdateSpeed packet = new(moveTypeToOpcode[(int)mtype, 2]);
-                packet.Status = m_movementInfo;
+                packet.Status = GetMovementUpdateState();
                 packet.Speed = GetSpeed(mtype);
                 playerMover.SendMessageToSet(packet, false);
             }
@@ -222,6 +224,11 @@ namespace Game.Entities
             if (!force && (!IsStopped() || !MoveSpline.Finalized()))
                 return;
 
+            // Facing is a stationary spline. Cache the interpolated position
+            // before choosing its endpoint; Launch already uses that position
+            // for its start, so an old endpoint creates a small backward move.
+            if(!MoveSpline.Finalized())UpdateSplinePosition();
+
             MoveSplineInit init = new(this);
             init.MoveTo(GetPositionX(), GetPositionY(), GetPositionZ(), false);
             if (GetTransport() != null)
@@ -242,6 +249,8 @@ namespace Game.Entities
             if (!force && (!IsStopped() || !MoveSpline.Finalized()))
                 return;
 
+            if(!MoveSpline.Finalized())UpdateSplinePosition();
+
             // @todo figure out under what conditions creature will move towards object instead of facing it where it currently is.
             MoveSplineInit init = new(this);
             init.MoveTo(GetPositionX(), GetPositionY(), GetPositionZ(), false);
@@ -259,6 +268,8 @@ namespace Game.Entities
             // do not face when already moving
             if (!force && (!IsStopped() || !MoveSpline.Finalized()))
                 return;
+
+            if(!MoveSpline.Finalized())UpdateSplinePosition();
 
             /// @todo figure out under what conditions creature will move towards object instead of facing it where it currently is.
             MoveSplineInit init = new(this);
@@ -345,7 +356,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
             else
@@ -380,7 +391,7 @@ namespace Game.Entities
                     playerMover.SendPacket(packet);
 
                     MoveUpdate moveUpdate = new();
-                    moveUpdate.Status = m_movementInfo;
+                    moveUpdate.Status = GetMovementUpdateState();
                     SendMessageToSet(moveUpdate, playerMover);
                 }
 
@@ -407,7 +418,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
 
@@ -433,7 +444,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
 
@@ -459,7 +470,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
 
@@ -755,7 +766,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
             else
@@ -1050,6 +1061,8 @@ namespace Game.Entities
             if (!enable && IsTypeId(TypeId.Player))
                 ToPlayer().SetFallInformation(0, GetPositionZ());
 
+            RefreshSISplineSpeed();
+
             Player playerMover = GetUnitBeingMoved()?.ToPlayer();
             if (playerMover != null)
             {
@@ -1059,7 +1072,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
             else
@@ -1092,7 +1105,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
             else
@@ -1125,7 +1138,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
             else
@@ -1175,7 +1188,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
             else
@@ -1441,7 +1454,7 @@ namespace Game.Entities
                 playerMover.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, playerMover);
             }
             else
@@ -1675,7 +1688,7 @@ namespace Game.Entities
                 else
                 {
                     MoveUpdateApplyMovementForce updateApplyMovementForce = new();
-                    updateApplyMovementForce.Status = m_movementInfo;
+                    updateApplyMovementForce.Status = GetMovementUpdateState();
                     updateApplyMovementForce.Force = force;
                     SendMessageToSet(updateApplyMovementForce, true);
                 }
@@ -1701,7 +1714,7 @@ namespace Game.Entities
                 else
                 {
                     MoveUpdateRemoveMovementForce updateRemoveMovementForce = new();
-                    updateRemoveMovementForce.Status = m_movementInfo;
+                    updateRemoveMovementForce.Status = GetMovementUpdateState();
                     updateRemoveMovementForce.TriggerGUID = id;
                     SendMessageToSet(updateRemoveMovementForce, true);
                 }
@@ -1736,7 +1749,7 @@ namespace Game.Entities
                 movingPlayer.SendPacket(packet);
 
                 MoveUpdate moveUpdate = new();
-                moveUpdate.Status = m_movementInfo;
+                moveUpdate.Status = GetMovementUpdateState();
                 SendMessageToSet(moveUpdate, movingPlayer);
             }
 
@@ -1760,7 +1773,7 @@ namespace Game.Entities
             else
             {
                 MoveUpdateSpeed updateModMovementForceMagnitude = new(ServerOpcodes.MoveUpdateModMovementForceMagnitude);
-                updateModMovementForceMagnitude.Status = m_movementInfo;
+                updateModMovementForceMagnitude.Status = GetMovementUpdateState();
                 updateModMovementForceMagnitude.Speed = (Speed)modMagnitude;
                 SendMessageToSet(updateModMovementForceMagnitude, true);
             }
@@ -1953,6 +1966,19 @@ namespace Game.Entities
             return ObjectGuid.Empty;
         }
 
+        internal MovementInfo GetMovementUpdateState()
+        {
+            // A client refreshes MovementInfo through its movement packets. A
+            // headless player's native Unit position is authoritative instead.
+            // Root, speed, water-walk and resurrection updates must not publish
+            // the old spawn/corpse position left in that client-owned cache.
+            if(ToPlayer()?.GetSession()?.IsServerControlled!=true)return m_movementInfo;
+            m_movementInfo.Guid=GetGUID();
+            m_movementInfo.Pos.Relocate(this);
+            m_movementInfo.Time=Time.NowRelative;
+            return m_movementInfo.Snapshot();
+        }
+
         //Teleport
         public void SendTeleportPacket(Position pos)
         {
@@ -1960,7 +1986,14 @@ namespace Game.Entities
             // SMSG_MOVE_TELEPORT is sent to self in order to trigger CMSG_MOVE_TELEPORT_ACK and update the position server side
 
             MoveUpdateTeleport moveUpdateTeleport = new();
-            moveUpdateTeleport.Status = m_movementInfo;
+            // Headless players never send the client movement packet that would
+            // normally populate Guid. Always identify the actual teleporting unit.
+            // Copy positions so preparing this packet cannot relocate live state
+            // before the normal teleport acknowledgement updates the map.
+            moveUpdateTeleport.Status = m_movementInfo.Snapshot();
+            moveUpdateTeleport.Status.Guid = GetGUID();
+            moveUpdateTeleport.Status.Pos.Relocate(pos);
+            moveUpdateTeleport.Status.Time = Time.NowRelative;
             if (_movementForces != null)
                 moveUpdateTeleport.MovementForces = _movementForces.GetForces();
             Unit broadcastSource = this;
@@ -1974,7 +2007,10 @@ namespace Game.Entities
 
                 ITransport transportBase = GetDirectTransport();
                 if (transportBase != null)
+                {
                     transportBase.CalculatePassengerOffset(ref x, ref y, ref z, ref o);
+                    moveUpdateTeleport.Status.transport.pos.Relocate(x,y,z,o);
+                }
 
                 MoveTeleport moveTeleport = new();
                 moveTeleport.MoverGUID = GetGUID();
@@ -1986,6 +2022,8 @@ namespace Game.Entities
                 moveTeleport.SequenceIndex = m_movementCounter++;
                 playerMover.SendPacket(moveTeleport);
 
+                // The self packet drives the ordinary acknowledgement; observers
+                // receive the destination snapshot prepared above.
                 broadcastSource = playerMover;
             }
             else

@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -283,7 +283,7 @@ namespace Game
         [WorldPacketHandler(ClientOpcodes.SpiritHealerActivate)]
         void HandleSpiritHealerActivate(SpiritHealerActivate packet)
         {
-            if (IsServerControlled) return; // SI players never accept resurrection sickness.
+            if (IsSIControlled) return; // SI players never accept resurrection sickness.
 
             Creature unit = 
                 GetPlayer().GetNPCIfCanInteractWith(packet.Healer, NPCFlags1.SpiritHealer, NPCFlags2.None);
@@ -535,7 +535,7 @@ namespace Game
 
                     ulong price = (ulong)Math.Floor(itemTemplate.GetBuyPrice() * discountMod);
                     price = itemTemplate.GetBuyPrice() > 0 ? Math.Max(1ul, price) : price;
-                    price = GetPlayer().ApplyClassicLegacyPriceMod(price, 0);
+                    price = GetPlayer().ApplyClassicLegacyPriceMod(price, Game.Systems.Legacy.LegacyEffectEngine.VendorPriceType);
 
                     int priceMod = GetPlayer().GetTotalAuraModifier(AuraType.ModVendorItemsPrices);
                     if (priceMod != 0)

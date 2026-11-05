@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -28,6 +28,10 @@ namespace Game.Entities
                 SkillType pskill = pair.Key;
                 SkillRaceClassInfoRecord rcEntry = Global.DB2Mgr.GetSkillRaceClassInfo(pskill, GetRace(), GetClass());
                 if (rcEntry == null)
+                    continue;
+
+                // Classic 1.60 (TC): profession child lines copy their profession, their cap does not follow the character level
+                if (IsClassicProfessionChildSkill(CliDB.SkillLineStorage.LookupByKey(pskill)))
                     continue;
 
                 if (Global.SpellMgr.GetSkillRangeType(rcEntry) == SkillRangeType.Level)
@@ -409,6 +413,15 @@ namespace Game.Entities
 
             UpdateSkillEnchantments(skillId, value, new_value);
             UpdateCriteria(CriteriaType.SkillRaised, (long)skillId);
+            if(new_value>value)Controller?.ProfessionSkillAdvanced(skillId,value,new_value);
+            if(new_value>value&&!_session.IsServerControlled)
+            {
+                string name=legacySkill?.DisplayName?[_session.GetSessionDbcLocale()];
+                if(string.IsNullOrEmpty(name))name=legacySkill?.DisplayName?[Locale.enUS]??skillId.ToString();
+                ChatPkt message=new();
+                message.Initialize(ChatMsg.Skill,Language.Universal,this,this,$"Your skill in {name} has increased to {new_value}.");
+                SendPacket(message);
+            }
             Log.outDebug(LogFilter.Player, $"Player:UpdateSkillPro Chance={chance / 10.0f:F3}% taken");
             return true;
         }
@@ -1078,6 +1091,45 @@ namespace Game.Entities
                 return;
             }
 
+            SetSkill(skillEntry, step, newVal, maxVal);
+
+            // Classic 1.60 (TC): profession child lines copy their profession, they never change it
+            if (!IsClassicProfessionChildSkill(skillEntry))
+                SyncClassicProfessionChildSkills(skill);
+        }
+
+        // Classic 1.60: the recipes of a profession (e.g. Tailoring 197) belong to its expansion child line (Classic Tailoring
+        // 2948: TradeSkillCategory and SkillupSkillLineID point at it). The profession window lists the categories of the child
+        // lines the character has, and shows their rank.
+        static bool IsClassicProfessionChildSkill(SkillLineRecord skillEntry)
+        {
+            if (skillEntry == null || skillEntry.ParentSkillLineID == 0)
+                return false;
+
+            SkillLineRecord parent = CliDB.SkillLineStorage.LookupByKey(skillEntry.ParentSkillLineID);
+            return parent != null && (parent.CategoryID == SkillCategory.Profession || parent.CategoryID == SkillCategory.Secondary);
+        }
+
+        void SyncClassicProfessionChildSkills(SkillType skill)
+        {
+            SkillLineRecord skillEntry = CliDB.SkillLineStorage.LookupByKey(skill);
+            if (skillEntry == null || skillEntry.ParentSkillLineID != 0 || (skillEntry.CategoryID != SkillCategory.Profession && skillEntry.CategoryID != SkillCategory.Secondary))
+                return;
+
+            // the profession window lists recipes and shows the rank of the child line, so it must equal the profession itself
+            ushort value = GetPureSkillValue(skill);
+            ushort maxValue = GetPureMaxSkillValue(skill);
+            ushort step = GetSkillStep(skill);
+            foreach (SkillLineRecord childSkillLine in Global.DB2Mgr.GetSkillLinesForParentSkill(skill))
+                if (GetPureSkillValue(childSkillLine.Id) != value || GetPureMaxSkillValue(childSkillLine.Id) != maxValue || GetSkillStep(childSkillLine.Id) != step)
+                    SetSkill(childSkillLine.Id, step, value, maxValue);
+        }
+
+        void SetSkill(SkillLineRecord skillEntry, int step, int newVal, int maxVal)
+        {
+            SkillType skill = skillEntry.Id;
+            bool classicProfessionChild = IsClassicProfessionChildSkill(skillEntry);
+
             int currVal;
             var skillStatusData = mSkillStatus.LookupByKey(skill);
             SkillInfo skillInfoField = m_activePlayerData.Skill;
@@ -1114,7 +1166,8 @@ namespace Game.Entities
                 if (newVal != 0)
                 {
                     // enable parent skill line if missing
-                    if (skillEntry.ParentSkillLineID != 0 && skillEntry.ParentTierIndex > 0 && GetSkillStep(skillEntry.ParentSkillLineID) < skillEntry.ParentTierIndex)
+                    // Classic 1.60 (TC): profession child lines must not set the parent's rank, Classic ranks come from the rank spells
+                    if (skillEntry.ParentSkillLineID != 0 && !classicProfessionChild && skillEntry.ParentTierIndex > 0 && GetSkillStep(skillEntry.ParentSkillLineID) < skillEntry.ParentTierIndex)
                     {
                         var rcEntry = Global.DB2Mgr.GetSkillRaceClassInfo(skillEntry.ParentSkillLineID, GetRace(), GetClass());
                         if (rcEntry != null)
@@ -1253,7 +1306,8 @@ namespace Game.Entities
 
                 if (skillEntry.ParentSkillLineID != 0)
                 {
-                    if (skillEntry.ParentTierIndex > 0)
+                    // Classic 1.60 (TC): profession child lines (e.g. Tailoring 197 -> 2948) must not set the parent's rank
+                    if (skillEntry.ParentTierIndex > 0 && !classicProfessionChild)
                     {
                         SkillRaceClassInfoRecord rcEntry = Global.DB2Mgr.GetSkillRaceClassInfo(skillEntry.ParentSkillLineID, GetRace(), GetClass());
                         if (rcEntry != null)
@@ -2769,8 +2823,8 @@ namespace Game.Entities
                             Milliseconds WeaponSpeed = GetBaseAttackTime(damageInfo.GetAttackType());
                             chance = GetPPMProcChance(WeaponSpeed, proto.SpellPPMRate, spellInfo);
                         }
-                        else if (chance > 100.0f)
-                            chance = GetWeaponProcChance();
+                        else if (chance > 100.0f || chance <= 0.0f)
+                            chance = GetWeaponProcChance(); // Classic 1.60: chance-on-hit spells with no chance in the data (Sulfuras, Jang'thraze, ...) use the weapon speed rate like vanilla
 
                         if (RandomHelper.randChance(chance) && Global.ScriptMgr.OnCastItemCombatSpell(this, damageInfo.GetVictim(), spellInfo, item))
                             CastSpell(damageInfo.GetVictim(), spellInfo.Id, item);

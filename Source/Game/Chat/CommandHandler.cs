@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Collections;
@@ -56,7 +56,7 @@ namespace Game.Chat
                 return false;
 
             // Send error message for GMs
-            SendSysMessage(CypherStrings.CmdInvalid, text);
+            SendSysMessage(ForeverStrings.CmdInvalid, text);
             return true;
         }
 
@@ -121,7 +121,7 @@ namespace Game.Chat
             }
 
             args.NextString();
-            SendSysMessage(CypherStrings.WrongLinkType);
+            SendSysMessage(ForeverStrings.WrongLinkType);
             return null;
         }
 
@@ -170,7 +170,7 @@ namespace Game.Chat
                 string name = ExtractPlayerNameFromLink(args);
                 if (string.IsNullOrEmpty(name))
                 {
-                    SendSysMessage(CypherStrings.PlayerNotFound);
+                    SendSysMessage(ForeverStrings.PlayerNotFound);
                     _sentErrorMessage = true;
                     return false;
                 }
@@ -190,7 +190,7 @@ namespace Game.Chat
 
             if (player == null && playerGuid.IsEmpty() && string.IsNullOrEmpty(playerName))
             {
-                SendSysMessage(CypherStrings.PlayerNotFound);
+                SendSysMessage(ForeverStrings.PlayerNotFound);
                 _sentErrorMessage = true;
                 return false;
             }
@@ -354,6 +354,13 @@ namespace Game.Chat
             return ObjectAccessor.GetCreatureOrPetOrVehicle(_session.GetPlayer(), _session.GetPlayer().GetTarget());
         }
 
+        internal Player GetMovementCommandTarget()
+        {
+            // During .si me the selected unit belongs to the AI, not the operator.
+            var player = GetPlayer();
+            return player?.IsSelfSIControlled == true ? player : GetSelectedPlayerOrSelf();
+        }
+
         public Player GetSelectedPlayerOrSelf()
         {
             if (_session == null)
@@ -447,7 +454,7 @@ namespace Game.Chat
 
             if (target_session == null && target_account == 0)
             {
-                SendSysMessage(CypherStrings.PlayerNotFound);
+                SendSysMessage(ForeverStrings.PlayerNotFound);
                 _sentErrorMessage = true;
                 return true;
             }
@@ -476,7 +483,7 @@ namespace Game.Chat
 
             if (_session.GetSecurity() < target_ac_sec || (strong && _session.GetSecurity() <= target_ac_sec))
             {
-                SendSysMessage(CypherStrings.YoursSecurityIsLow);
+                SendSysMessage(ForeverStrings.YoursSecurityIsLow);
                 _sentErrorMessage = true;
                 return true;
             }
@@ -521,9 +528,9 @@ namespace Game.Chat
             return _session?.GetPlayer();
         }
 
-        public string GetCypherString(CypherStrings str)
+        public string GetForeverString(ForeverStrings str)
         {
-            return Global.ObjectMgr.GetCypherString(str);
+            return Global.ObjectMgr.GetForeverString(str);
         }
 
         public virtual Locale GetSessionDbcLocale()
@@ -536,9 +543,9 @@ namespace Game.Chat
             return (byte)_session.GetSessionDbLocaleIndex();
         }
 
-        public string GetParsedString(CypherStrings cypherString, params object[] args)
+        public string GetParsedString(ForeverStrings foreverString, params object[] args)
         {
-            return string.Format(Global.ObjectMgr.GetCypherString(cypherString), args);
+            return string.Format(Global.ObjectMgr.GetForeverString(foreverString), args);
         }
 
         public void SendSysMessage(string str, params object[] args)
@@ -546,9 +553,9 @@ namespace Game.Chat
             SendSysMessage(string.Format(str, args));
         }
 
-        public void SendSysMessage(CypherStrings cypherString, params object[] args)
+        public void SendSysMessage(ForeverStrings foreverString, params object[] args)
         {
-            SendSysMessage(string.Format(Global.ObjectMgr.GetCypherString(cypherString), args));
+            SendSysMessage(string.Format(Global.ObjectMgr.GetForeverString(foreverString), args));
         }
 
         public virtual void SendSysMessage(string str, bool escapeCharacters = false)
@@ -568,7 +575,7 @@ namespace Game.Chat
             }            
         }
 
-        public void SendNotification(CypherStrings str, params object[] args)
+        public void SendNotification(ForeverStrings str, params object[] args)
         {
             _session.SendNotification(str, args);
         }
@@ -599,7 +606,7 @@ namespace Game.Chat
             {
                 if (!ObjectManager.NormalizePlayerName(ref name))
                 {
-                    SendSysMessage(CypherStrings.PlayerNotFound);
+                    SendSysMessage(ForeverStrings.PlayerNotFound);
                     return false;
                 }
 
@@ -638,7 +645,7 @@ namespace Game.Chat
 
     class AddonChannelCommandHandler : CommandHandler
     {
-        public static string PREFIX = "TrinityCore";
+        public static string PREFIX = "EmuForever";
 
         string echo;
         bool hadAck;
@@ -677,7 +684,7 @@ namespace Game.Chat
                     }
                     else
                     {
-                        SendSysMessage(CypherStrings.CmdInvalid, cmd);
+                        SendSysMessage(ForeverStrings.CmdInvalid, cmd);
                         SendFailed();
                     }
                     return true;
@@ -766,7 +773,7 @@ namespace Game.Chat
 
         public override string GetNameLink()
         {
-            return GetCypherString(CypherStrings.ConsoleCommand);
+            return GetForeverString(ForeverStrings.ConsoleCommand);
         }
 
         public override bool NeedReportToTarget(Player chr)
@@ -824,7 +831,7 @@ namespace Game.Chat
 
         public override string GetNameLink()
         {
-            return GetCypherString(CypherStrings.ConsoleCommand);
+            return GetForeverString(ForeverStrings.ConsoleCommand);
         }
 
         public override bool NeedReportToTarget(Player chr)

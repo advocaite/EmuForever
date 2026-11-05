@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Collections;
@@ -19,7 +19,7 @@ namespace Game.Misc
             GossipOptionFlags flags, int? gossipNpcOptionId, int actionMenuId, int actionPoiId, bool boxCoded, uint boxMoney,
             string boxText, int? spellId, int? overrideIconId, int sender, int action)
         {
-            Cypher.Assert(_menuItems.Count <= SharedConst.MaxGossipMenuItems);
+            Forever.Assert(_menuItems.Count <= SharedConst.MaxGossipMenuItems);
 
             // Find a free new id - script case
             if (orderIndex == -1)
@@ -35,15 +35,7 @@ namespace Game.Misc
                 }
 
                 if (!_menuItems.Empty())
-                {
-                    foreach (var pair in _menuItems)
-                    {
-                        if (pair.Value.OrderIndex > orderIndex)
-                            break;
-
-                        orderIndex = pair.Value.OrderIndex + 1;
-                    }
-                }
+                    orderIndex = System.Math.Max(orderIndex, _menuItems.Keys.Last() + 1);
             }
 
             if (gossipOptionId == 0)
@@ -67,7 +59,8 @@ namespace Game.Misc
             menuItem.Sender = sender;
             menuItem.Action = action;
 
-            _menuItems.Add(orderIndex, menuItem);
+            // Explicit indexes can replace an option (including conditional DB variants), as in the client menu model.
+            _menuItems[orderIndex] = menuItem;
             return orderIndex;
         }
 

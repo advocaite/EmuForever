@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 namespace Framework.Database
@@ -136,6 +136,7 @@ namespace Framework.Database
             PrepareStatement(HotfixStatements.SEL_AZERITE_TIER_UNLOCK_SET, "SELECT ID, Flags FROM azerite_tier_unlock_set WHERE (`VerifiedBuild` > 0) = ?");
 
             // BankBagSlotPrices.db2
+            PrepareStatement(HotfixStatements.SEL_BANK_TAB, "SELECT ID, Cost, BankType, OrderIndex, PlayerConditionID, PurchasePromptTitle, PurchasePromptBody, PurchasePromptConfirmation, TabCleanupConfirmation, TabNameEditBoxHeader FROM bank_tab WHERE (`VerifiedBuild` > 0) = ?");
             PrepareStatement(HotfixStatements.SEL_BANK_BAG_SLOT_PRICES, "SELECT ID, Cost FROM bank_bag_slot_prices WHERE (`VerifiedBuild` > 0) = ?");
 
             // BannedAddons.db2
@@ -1084,7 +1085,7 @@ namespace Framework.Database
                 "SpellID FROM spell_cooldowns WHERE (`VerifiedBuild` > 0) = ?");
 
             // SpellDuration.db2
-            PrepareStatement(HotfixStatements.SEL_SPELL_DURATION, "SELECT ID, Duration, MaxDuration, DurationPerResource FROM spell_duration WHERE (`VerifiedBuild` > 0) = ?");
+            PrepareStatement(HotfixStatements.SEL_SPELL_DURATION, "SELECT ID, Duration, DurationPerLevel, MaxDuration, DurationPerResource FROM spell_duration WHERE (`VerifiedBuild` > 0) = ?");
 
             // SpellEffect.db2
             PrepareStatement(HotfixStatements.SEL_SPELL_EFFECT, "SELECT ID, EffectAura, DifficultyID, EffectIndex, Effect, EffectAmplitude, EffectAttributes, EffectAuraPeriod, EffectBonusCoefficient, " +
@@ -1503,6 +1504,7 @@ namespace Framework.Database
         SEL_AZERITE_TIER_UNLOCK_SET,
 
         SEL_BANK_BAG_SLOT_PRICES,
+        SEL_BANK_TAB,
 
         SEL_BANNED_ADDONS,
 

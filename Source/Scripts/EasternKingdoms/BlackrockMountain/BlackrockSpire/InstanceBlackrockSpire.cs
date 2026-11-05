@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -616,7 +616,6 @@ namespace Scripts.EasternKingdoms.BlackrockMountain.BlackrockSpire
             ObjectGuid go_emberseerin;
             ObjectGuid go_doors;
             ObjectGuid go_emberseerout;
-            ObjectGuid go_blackrockaltar;
             ObjectGuid[] go_roomrunes = new ObjectGuid[7];
             ObjectGuid[] go_emberseerrunes = new ObjectGuid[7];
             List<ObjectGuid>[] runecreaturelist = new List<ObjectGuid>[7];

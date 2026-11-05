@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -183,6 +183,9 @@ namespace Game.Collision
 
         public void EnableCollision(bool enable) { _collisionEnabled = enable; }
         public bool IsCollisionEnabled() { return _collisionEnabled; }
+        public GameObjectCollisionSnapshot? Snapshot(PhaseShift phase,float radius=.5f,float height=1.8f)=>
+            _collisionEnabled&&iModel!=null&&owner.IsSpawned()&&owner.IsInPhase(phase)
+                ?new(iModel,iPos,iInvRot,iInvScale,iBound,radius,height):null;
         public bool IsMapObject() { return isWmo; }
         public byte GetNameSetId() { return owner.GetNameSetId(); }
         

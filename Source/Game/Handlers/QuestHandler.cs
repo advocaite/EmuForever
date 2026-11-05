@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -15,6 +15,20 @@ namespace Game
 {
     public partial class WorldSession
     {
+        [WorldPacketHandler(ClientOpcodes.UiMapQuestLinesRequest, Processing = PacketProcessing.Inplace)]
+        void HandleUiMapQuestLinesRequest(UiMapQuestLinesRequest packet)
+        {
+            if (!CliDB.UiMapStorage.ContainsKey(packet.UiMapID)) return;
+            SendPacket(Game.Quests.QuestMapAvailability.Build(packet.UiMapID,
+                Global.ObjectMgr.GetUiMapQuestLinesList(packet.UiMapID), Global.ObjectMgr.GetUiMapQuestsList(packet.UiMapID),
+                Global.DB2Mgr.GetQuestsForQuestLine, id =>
+                {
+                    Quest quest = Global.ObjectMgr.GetQuestTemplate(id);
+                    return quest == null ? default : new Game.Quests.QuestMapQuestState(true,
+                        _player.CanTakeQuest(quest, false), _player.GetQuestRewardStatus(id));
+                }));
+        }
+
         [WorldPacketHandler(ClientOpcodes.QuestGiverStatusQuery, Processing = PacketProcessing.Inplace)]
         void HandleQuestgiverStatusQuery(QuestGiverStatusQuery packet)
         {

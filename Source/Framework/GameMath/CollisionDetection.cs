@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using System;
@@ -36,7 +36,7 @@ namespace Framework.GameMath
                     Inside = false;
 
                     // Calculate T distances to candidate planes
-                    if ((uint)dir.GetAt(i) != 0)
+                    if (dir.GetAt(i) != 0)
                     {
                         MaxT.SetAt((MinB.GetAt(i) - origin.GetAt(i)) / dir.GetAt(i), i);
                     }
@@ -47,7 +47,7 @@ namespace Framework.GameMath
                     Inside = false;
 
                     // Calculate T distances to candidate planes
-                    if ((uint)dir.GetAt(i) != 0)
+                    if (dir.GetAt(i) != 0)
                     {
                         MaxT.SetAt((MaxB.GetAt(i) - origin.GetAt(i)) / dir.GetAt(i), i);
                     }
@@ -74,7 +74,7 @@ namespace Framework.GameMath
             }
 
             // Check final candidate actually inside box
-            if (Convert.ToBoolean((uint)MaxT.GetAt(WhichPlane) & 0x80000000))
+            if (MaxT.GetAt(WhichPlane) < 0)
             {
                 // Miss the box
                 return false;

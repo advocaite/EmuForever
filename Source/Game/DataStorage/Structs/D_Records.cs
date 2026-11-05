@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -35,15 +35,15 @@ namespace Game.DataStorage
 
     public sealed class DifficultyRecord
     {
-        private int _id;
+        private int _id = default;
         public LocalizedString Name;
-        private byte _instanceType;
+        private byte _instanceType = default;
         public byte OrderIndex;
         public sbyte OldEnumValue;
-        private ushort _fallbackDifficultyID;
+        private ushort _fallbackDifficultyID = default;
         public byte MinPlayers;
         public byte MaxPlayers;
-        private int _flags;
+        private int _flags = default;
         public byte ItemContext;
         public ushort ToggleDifficultyID;
         public int GroupSizeHealthCurveID;
@@ -75,8 +75,8 @@ namespace Game.DataStorage
     {
         public LocalizedString Name;
         public int Id;
-        private short _mapID;
-        private short _difficultyID;
+        private short _mapID = default;
+        private short _difficultyID = default;
         public int OrderIndex;
         public int CompleteWorldStateID;
         public sbyte Bit;

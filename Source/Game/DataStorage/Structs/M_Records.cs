@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -29,8 +29,8 @@ namespace Game.DataStorage
         public LocalizedString PvpLongDescription;
         public float[] Corpse = new float[2];
         public byte MapType;
-        private sbyte _instanceType;
-        private byte _expansionID;
+        private sbyte _instanceType = default;
+        private byte _expansionID = default;
         public ushort AreaTableID;
         public short LoadingScreenID;
         public short TimeOfDayOverride;
@@ -52,7 +52,9 @@ namespace Game.DataStorage
         private int[] _flags = new int[3];
 
         #region Properties
-        public MapTypes InstanceType => (MapTypes)_instanceType;
+        // The winter WSG asset is tagged as a world map in the client DB2.
+        // It must create isolated battleground instances on the server.
+        public MapTypes InstanceType => Id==2996?MapTypes.Battleground:(MapTypes)_instanceType;
         public MapFlags Flags => (MapFlags)_flags[0];
         public MapFlags2 Flags2 => (MapFlags2)_flags[1];
         public Expansion Expansion => (Expansion)_expansionID;
@@ -156,18 +158,22 @@ namespace Game.DataStorage
 
     public sealed class MapDifficultyRecord
     {
+        internal MapDifficultyRecord ForMap(int map)
+        {
+            var copy=(MapDifficultyRecord)MemberwiseClone();copy.MapID=map;return copy;
+        }
         /// <summary>
         /// m_message_lang (text showed when transfer to map failed)
         /// </summary>
         public LocalizedString Message;
         public int Id;
-        private ushort _difficultyID;
+        private ushort _difficultyID = default;
         public int LockID;
-        private byte _resetInterval;
+        private byte _resetInterval = default;
         public int MaxPlayers;
         public byte ItemContext;
         public int ItemContextPickerID;
-        private int _flags;
+        private int _flags = default;
         public int ContentTuningID;
         public int WorldStateExpressionID;
         public int MapID;
@@ -214,7 +220,7 @@ namespace Game.DataStorage
         public LocalizedString FailureDescription;
         public int PlayerConditionID;
         public int OrderIndex;
-        private uint _mapDifficultyID;
+        private uint _mapDifficultyID = default;
 
         #region Properties
         public Difficulty MapDifficultyID => (Difficulty)_mapDifficultyID;
@@ -227,7 +233,7 @@ namespace Game.DataStorage
         public int Parent;
         public sbyte Operator;
         public sbyte Amount;
-        private int _type;
+        private int _type = default;
         public int Asset;
         public int SecondaryAsset;
         public int TertiaryAsset;
@@ -244,7 +250,7 @@ namespace Game.DataStorage
         public LocalizedString Description;
         public int Id;
         public ushort MountTypeID;
-        private int _flags;
+        private int _flags = default;
         public sbyte SourceTypeEnum;
         public int SourceSpellID;
         public int PlayerConditionID;
@@ -275,7 +281,7 @@ namespace Game.DataStorage
     public sealed class MountCapabilityRecord
     {
         public int Id;
-        private int _flags;
+        private int _flags = default;
         public ushort ReqRidingSkill;
         public ushort ReqAreaID;
         public int ReqSpellAuraID;
@@ -306,7 +312,7 @@ namespace Game.DataStorage
     public sealed class MountTypeXCapabilityRecord
     {
         public int Id;
-        private ushort _mountTypeID;
+        private ushort _mountTypeID = default;
         public ushort MountCapabilityID;
         public byte OrderIndex;
 

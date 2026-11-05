@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -118,6 +118,7 @@ namespace Game.Entities
 
         public override void Dispose()
         {
+            DisposeSIController();
             m_clientGUIDs.Clear();
             m_visibleTransports.Clear();
             // Note: buy back item already deleted from DB when player was saved
@@ -155,12 +156,37 @@ namespace Game.Entities
         }
 
         //Core
+        string _surname = string.Empty;
+        public static string FormatFullName(string first,string surname)
+        {
+            first=first?.Trim(); surname=surname?.Trim();
+            if(string.IsNullOrEmpty(surname)) return first ?? string.Empty;
+            return string.IsNullOrEmpty(first) ? surname : first+" "+surname;
+        }
+        public string GetFirstName() => base.GetName();
+        public string GetSurname() => _surname ?? string.Empty;
+        public void SetSurname(string surname) => _surname = surname?.Trim() ?? string.Empty;
+        // GetName is called constantly (packets, logs, SI); rebuild the full name only when a part changes.
+        string _fullNameFirst, _fullNameSurname, _fullName;
+        public override string GetName(Locale locale = Locale.enUS)
+        {
+            string first = base.GetName(locale), surname = GetSurname();
+            if (!ReferenceEquals(first, _fullNameFirst) || !ReferenceEquals(surname, _fullNameSurname))
+            {
+                _fullName = FormatFullName(first, surname);
+                _fullNameFirst = first; _fullNameSurname = surname;
+            }
+            return _fullName;
+        }
+
         public bool Create(long guidlow, CharacterCreateInfo createInfo)
         {
             _Create(ObjectGuid.Create(HighGuid.Player, guidlow));
+            InitializeGuildClubMemberId();
 
             // Classic carries surname separately in character/name packets and the database.
             SetName(createInfo.Name);
+            SetSurname(createInfo.Surname);
 
             PlayerInfo info = ObjectMgr.GetPlayerInfo(createInfo.RaceId, createInfo.ClassId);
             if (info == null)
@@ -214,7 +240,9 @@ namespace Game.Entities
             }
 
             // set initial homebind position
-            SetHomebind(this, GetAreaId());
+            // The player is not in the world yet, so its cached area has not been populated.
+            homebind.WorldRelocate(this);
+            homebindAreaId = Global.TerrainMgr.GetAreaId(PhasingHandler.EmptyPhaseShift, homebind);
 
             PowerType powertype = cEntry.DisplayPower;
 
@@ -251,7 +279,7 @@ namespace Game.Entities
             SetRestState(RestTypes.XP, ((GetSession().IsARecruiter() || GetSession().GetRecruiterId() != 0) ? PlayerRestState.RAFLinked : PlayerRestState.Normal));
             SetRestState(RestTypes.Honor, PlayerRestState.Normal);
             SetNativeGender(createInfo.Sex);
-            SetInventorySlotCount(InventorySlots.DefaultSize);
+            SetAccountSecured(GetSession().HasSecuredBackpack());
 
             // set starting level
             SetLevel(GetStartLevel(createInfo.RaceId, createInfo.ClassId, createInfo.TemplateSet));
@@ -329,6 +357,7 @@ namespace Game.Entities
             }
 
             // all item positions
+            AutoSelectAmmo();
             SetActiveTalentGroup(0);
 
             GetThreatManager().Initialize();
@@ -344,7 +373,25 @@ namespace Game.Entities
             if (!IsInWorld)
                 return;
 
+            try
+            {
+                if(ProcessOperatorTeleport())PendingUpdateDiff+=diff;
+                else UpdatePlayerState(diff);
+            }
+            finally
+            {
+                SetCanDelayTeleport(false);
+                DispatchDelayedTeleport();
+            }
+        }
+
+        void UpdatePlayerState(TimeSpan diff)
+        {
+
+            UpdateSelfSIControl();
+            Game.Chat.Commands.SICommands.UpdateTravelMarkers(this,diff);
             UpdateLegacyProgress();
+            UpdatePvpRank();
 
             // undelivered mail
             if (m_nextMailDelivereTime != ServerTime.Zero && m_nextMailDelivereTime <= LoopTime.ServerTime)
@@ -366,8 +413,8 @@ namespace Game.Entities
 
             //used to implement delayed far teleports
             SetCanDelayTeleport(true);
-            base.Update(diff);
-            SetCanDelayTeleport(false);
+            try { base.Update(diff); }
+            finally { SetCanDelayTeleport(false); }
 
             // Unit::Update updates the spell history and spell states. We can now check if we can launch another pending cast.
             if (CanExecutePendingSpellCastRequest())
@@ -395,7 +442,9 @@ namespace Game.Entities
                 }
             }
 
-            AIUpdateTick(diff);
+            SetCanDelayTeleport(true);
+            try { AIUpdateTick(diff); }
+            finally { SetCanDelayTeleport(false); }
 
             // Update items that have just a limited lifetime
             TimeSpan elapsed = now - m_Last_tick;
@@ -579,10 +628,8 @@ namespace Game.Entities
                     m_hostileReferenceCheckTimer -= diff;
             }
 
-            //we should execute delayed teleports only for alive(!) players
-            //because we don't want player's ghost teleported from graveyard
-            if (IsHasDelayedTeleport() && IsAlive())
-                TeleportTo(teleportDest, m_teleport_options);
+            // Delayed teleports dispatch at the outer update boundary, even if
+            // an AI/script update fails, with their destination instance intact.
         }
 
         public override void SetDeathState(DeathState s)
@@ -679,6 +726,7 @@ namespace Game.Entities
             // cleanup
             if (IsInWorld)
             {
+                Game.Chat.Commands.SICommands.ClearTravelMarkers(this);
                 // Release charmed creatures, unsummon totems and remove pets/guardians
                 StopCastingCharm();
                 StopCastingBindSight();
@@ -779,6 +827,11 @@ namespace Game.Entities
         //Network
         public void SendPacket(ServerPacket data)
         {
+            // Creation uses a temporary Player on the character-select session.
+            // Its skills, talents and auras are saved and sent on the actual login.
+            if (_session.GetPlayer() != this)
+                return;
+
             _session.SendPacket(data);
         }
 
@@ -797,7 +850,15 @@ namespace Game.Entities
         public void InitTaxiNodesForLevel() { m_taxi.InitTaxiNodesForLevel(GetRace(), GetClass(), GetLevel()); }
 
         //Cheat Commands
-        public bool GetCommandStatus(PlayerCommandStates command) { return (_activeCheats & command) != 0; }
+        public bool GetCommandStatus(PlayerCommandStates command)
+        {
+            // SI control uses ordinary spell rules even when .si me took over
+            // an operator with spell cheats enabled. Keep the stored flags so
+            // returning to manual control restores the operator's settings.
+            var active = Controller == null ? _activeCheats : _activeCheats &
+                ~(PlayerCommandStates.Cooldown | PlayerCommandStates.Casttime | PlayerCommandStates.Power);
+            return (active & command) != 0;
+        }
         public void SetCommandStatusOn(PlayerCommandStates command) { _activeCheats |= command; }
         public void SetCommandStatusOff(PlayerCommandStates command) { _activeCheats &= ~command; }
 
@@ -1129,7 +1190,7 @@ namespace Game.Entities
                 {
                     ExitVehicle();
 
-                    // Temporary for issue https://github.com/TrinityCore/TrinityCore/issues/24876
+                    // Temporary for issue https://github.com/EmuForever/EmuForever/issues/24876
                     if (!GetCharmedGUID().IsEmpty() && !charm.HasAuraTypeWithCaster(AuraType.ControlVehicle, GetGUID()))
                     {
                         Log.outFatal(LogFilter.Player, 
@@ -1161,7 +1222,7 @@ namespace Game.Entities
                         $"Player debug info: {GetDebugInfo()}\n" +
                         $"Charm debug info: {charm.GetDebugInfo()}");
 
-                    Cypher.Assert(false);
+                    Forever.Assert(false);
                 }
 
                 SetCharm(charm, false);
@@ -1307,7 +1368,7 @@ namespace Game.Entities
                 return;
 
             CurrencyTypesRecord currency = CliDB.CurrencyTypesStorage.LookupByKey(id);
-            Cypher.Assert(currency != null);
+            Forever.Assert(currency != null);
 
             // Check faction
             if ((currency.IsAlliance && GetTeam() != Team.Alliance) ||
@@ -1399,6 +1460,7 @@ namespace Game.Entities
             }
 
             CurrencyChanged(id, amount);
+            UpdateRenownCriteria(id);
 
             SetCurrency packet = new();
             packet.Type = currency.Id;
@@ -1442,7 +1504,7 @@ namespace Game.Entities
                 return;
 
             CurrencyTypesRecord currency = CliDB.CurrencyTypesStorage.LookupByKey(id);
-            Cypher.Assert(currency != null);
+            Forever.Assert(currency != null);
 
             // Check faction
             if ((currency.IsAlliance && GetTeam() != Team.Alliance) ||
@@ -1537,6 +1599,9 @@ namespace Game.Entities
                 return 0;
 
             int maxQuantity = currency.MaxQty;
+            // Classic 1.60 PvP rank: the max quantity follows the season week (curve 102601: rank 3 in week 1 ... rank 14 from week 10).
+            if (currency.Id == Game.Systems.PvP.ForeverPvpRanks.RankCurrencyId && currency.MaxQtyCurveID != 0)
+                maxQuantity = Game.Systems.PvP.ForeverPvpRanks.RankCap(currency);
             int increasedCap = 0;
 
             if (currency.HasFlag(CurrencyTypesFlags.DynamicMaximum))
@@ -1716,6 +1781,16 @@ namespace Game.Entities
         }
 
         void SendInitialActionButtons() { SendActionButtons(0); }
+
+        public void InitializeStartingActionButtons(PlayerInfo info)
+        {
+            // First-login spells/stances can change the visible action page after
+            // the initial packet. Retain saved buttons and fill only missing defaults.
+            foreach (var action in info.action)
+                if (GetActionButton(action.button) == null)
+                    AddActionButton(action.button, action.action, (ActionButtonType)action.type);
+            SendInitialActionButtons();
+        }
 
         void SendActionButtons(ActionsButtonsUpdateReason state)
         {
@@ -1985,6 +2060,10 @@ namespace Game.Entities
 
             if (m_vehicle != null)
                 ExitVehicle();
+
+            bool spellTeleport=options.HasAnyFlag(TeleportToOptions.Spell);
+            Controller?.PrepareForTeleport(!spellTeleport || GetMapId()!=mapid ||
+                instanceId.HasValue&&GetInstanceId()!=instanceId.Value || GetExactDistSq(x,y,z)>1600,!spellTeleport);
 
             // reset movement flags at teleport, because player will continue move with these flags after teleport
             SetUnitMovementFlags(GetUnitMovementFlags() & MovementFlag.MaskHasPlayerStatusOpcode);
@@ -2722,28 +2801,24 @@ namespace Game.Entities
                     }
                 }
 
+                // Classic 1.60 dual spec purchase: class trainers of the player's class, from level 10, until bought
+                if (IsClassicDualSpecGossipOption(gossipMenuItem.GossipOptionID)
+                    && (creature == null || !creature.CanResetTalents(this) || GetClassicSpecGroupConfig(true) != null))
+                    canTalk = false;
+
                 if (canTalk)
                     menu.GetGossipMenu().AddMenuItem(gossipMenuItem, gossipMenuItem.MenuID, gossipMenuItem.OrderIndex);
             }
 
-            // Classic trainers and vendors can have service flags without a matching gossip row.
-            // Keep their services reachable, as in the Forever C++ core.
+            // Legacy reset is an additional server feature; normal services use their database options.
             if (source.ToCreature() is Creature serviceNpc)
             {
                 GossipMenu gossipMenu = menu.GetGossipMenu();
-                bool HasOption(GossipOptionNpc option) => gossipMenu.GetMenuItems().Values.Any(item => item.OptionNpc == option);
 
                 if (CanResetLegacyAt(serviceNpc) && GetLegacyConfig()?.Entries.FindIndexIf(entry => entry.Rank > 0) >= 0)
-                    gossipMenu.AddMenuItem(LegacyResetGossipOption, gossipMenu.GetMenuItemCount(), GossipOptionNpc.None, "Reset my Legacy perks.", 0,
+                    gossipMenu.AddMenuItem(LegacyResetGossipOption, -1, GossipOptionNpc.None, "Reset my Legacy perks.", 0,
                         GossipOptionFlags.None, null, 0, 0, false, 0, "Reset all purchased Legacy perks?", null, null, menuId, LegacyResetGossipOption);
 
-                if (serviceNpc.HasNpcFlag(NPCFlags1.Trainer) && serviceNpc.GetTrainerId() != 0 && !HasOption(GossipOptionNpc.Trainer))
-                    gossipMenu.AddMenuItem(2146000001, gossipMenu.GetMenuItemCount(), GossipOptionNpc.Trainer, "Train me.", 0,
-                        GossipOptionFlags.None, null, 0, 0, false, 0, "", null, null, menuId, gossipMenu.GetMenuItemCount());
-
-                if (serviceNpc.HasNpcFlag(NPCFlags1.Vendor) && serviceNpc.GetVendorItems() != null && !HasOption(GossipOptionNpc.Vendor))
-                    gossipMenu.AddMenuItem(2146000002, gossipMenu.GetMenuItemCount(), GossipOptionNpc.Vendor, "Let me browse your goods.", 0,
-                        GossipOptionFlags.None, null, 0, 0, false, 0, "", null, null, menuId, gossipMenu.GetMenuItemCount());
             }
         }
 
@@ -2827,6 +2902,13 @@ namespace Game.Entities
             switch (gossipOptionNpc)
             {
                 case GossipOptionNpc.None:
+                    if (IsClassicDualSpecGossipOption(item.GossipOptionID))
+                    {
+                        PlayerTalkClass.SendCloseGossip();
+                        Creature trainer = source.ToCreature();
+                        if (trainer == null || !trainer.CanResetTalents(this) || !PurchaseClassicDualSpec())
+                            return;                                 // not charged
+                    }
                     break;
                 case GossipOptionNpc.Vendor:
                     GetSession().SendListInventory(guid);
@@ -3023,7 +3105,7 @@ namespace Game.Entities
                     if (menuIdToShow != 0)
                         return menuIdToShow;
 
-                    // otherwise pick from db based on conditions
+                    // Otherwise pick an assigned database menu based on its conditions.
                     foreach (var menuId in source.ToCreature().GetCreatureTemplate().GossipMenuIds)
                     {
                         var menuBounds = ObjectMgr.GetGossipMenusMapBounds(menuId);
@@ -3128,7 +3210,7 @@ namespace Game.Entities
 
                 if (CanJoinConstantChannelInZone(channelEntry, current_zone))
                 {
-                    if (!channelEntry.HasFlag(ChatChannelFlags.ZoneBased))
+                    if (channelEntry.HasFlag(ChatChannelFlags.ZoneBased))
                     {
                         if (channelEntry.HasFlag(ChatChannelFlags.LinkedChannel) && usedChannel != null)
                             continue;                            // Already on the channel, as city channel names are not changing
@@ -3417,7 +3499,7 @@ namespace Game.Entities
 
         public void SetResurrectRequestData(WorldObject caster, int health, int mana, int appliedAura)
         {
-            Cypher.Assert(!IsResurrectRequested());
+            Forever.Assert(!IsResurrectRequested());
             _resurrectionData = new ResurrectionData();
             _resurrectionData.GUID = caster.GetGUID();
             _resurrectionData.Location.WorldRelocate(caster);
@@ -3643,14 +3725,17 @@ namespace Game.Entities
             if (powerInfo == null)
                 return;
 
-            if (powerInfo.HasFlag(PowerTypeFlags.UseRegenInterrupt) && m_regenInterruptTimestamp + powerInfo.RegenInterruptTime >= LoopTime.ServerTime)
+            // Classic 1.60 (vanilla): mana follows only the five second rule below (TC-forever ClassicManaRegen.h). Spirit regeneration
+            // stops for 5 sec after mana is paid; the interrupted rate is the share of SPELL_AURA_MOD_MANA_REGEN_INTERRUPT (not zero).
+            // Receiving mana or leaving combat does not stop it, and combat itself does not interrupt it.
+            if (power != PowerType.Mana && powerInfo.HasFlag(PowerTypeFlags.UseRegenInterrupt) && m_regenInterruptTimestamp + powerInfo.RegenInterruptTime >= LoopTime.ServerTime)
                 return;
 
             float addvalue = 0;
 
             if (power == PowerType.Mana)
             {
-                if (IsPowerRegenInterruptedByMP5Rule())
+                if (IsPowerRegenInterruptedByMP5Rule() || HasAuraType(AuraType.InterruptRegen))
                     addvalue = (powerInfo.RegenCombat + m_unitData.PowerRegenInterruptedFlatModifier[powerIndex]) * 0.001f * RegenTimer;
                 else
                     addvalue = (powerInfo.RegenPeace + m_unitData.PowerRegenFlatModifier[powerIndex]) * 0.001f * RegenTimer;
@@ -4291,16 +4376,19 @@ namespace Game.Entities
                 // set resurrection sickness
                 CastSpell(this, raceEntry.ResSicknessSpellID, true);
 
-                // not full duration
-                if (GetLevel() < startLevel + 9)
-                {
-                    Seconds delta = (Seconds)(GetLevel() - startLevel + 1) * Time.Minute;
-                    Aura aur = GetAura(raceEntry.ResSicknessSpellID, GetGUID());
-                    if (aur != null)
-                        aur.SetDuration(delta);
-
-                }
+                SetResurrectionSicknessDuration(GetAura(raceEntry.ResSicknessSpellID, GetGUID()), GetLevel(), startLevel);
             }
+        }
+
+        internal static void SetResurrectionSicknessDuration(Aura aura, int level, int startLevel)
+        {
+            if (aura == null)
+                return;
+
+            // Apply the Classic level-based rule to both the timer and the duration sent to the client.
+            Seconds duration = (Seconds)Math.Clamp(level - startLevel + 1, 0, 10) * Time.Minute;
+            aura.SetMaxDuration(duration);
+            aura.SetDuration(duration);
         }
 
         ObjectGuid GetSpiritHealerGUID() { return _areaSpiritHealerGUID; }
@@ -4473,7 +4561,11 @@ namespace Game.Entities
             // Special handle for Battlegroundmaps
             Battleground bg = GetBattleground();
             if (bg != null)
-                ClosestGrave = bg.GetClosestGraveyard(this);
+            {
+                // A battleground without a graveyard link for this spot used to leave the ghost on its corpse
+                // (and the spirit guide revived it there). Fall back to the team's base.
+                ClosestGrave = bg.GetClosestGraveyard(this) ?? bg.GetTeamStartPosition(Battleground.GetTeamIndexByTeamId(GetBGTeam()));
+            }
             else
             {
                 BattleField bf = BattleFieldMgr.GetBattlefieldToZoneId(GetMap(), GetZoneId());
@@ -4691,7 +4783,7 @@ namespace Game.Entities
 
             map.AddToMap(pet.ToCreature());
 
-            Cypher.Assert(!petStable.CurrentPetIndex.HasValue);
+            Forever.Assert(!petStable.CurrentPetIndex.HasValue);
             petStable.SetCurrentUnslottedPetIndex(petStable.UnslottedPets.Count);
             PetStable.PetInfo petInfo = new();
             pet.FillPetInfo(petInfo);
@@ -4765,7 +4857,7 @@ namespace Game.Entities
             pet.SavePetToDB(mode);
 
             PetStable.PetInfo currentPet = m_petStable.GetCurrentPet();
-            Cypher.Assert(currentPet != null && currentPet.PetNumber == pet.GetCharmInfo().GetPetNumber());
+            Forever.Assert(currentPet != null && currentPet.PetNumber == pet.GetCharmInfo().GetPetNumber());
             if (mode == PetSaveMode.NotInSlot)
                 m_petStable.CurrentPetIndex = null;
             else if (mode == PetSaveMode.AsDeleted)
@@ -4855,7 +4947,7 @@ namespace Game.Entities
             SendPacket(setCollisionHeight);
 
             MoveUpdateCollisionHeight updateCollisionHeight = new();
-            updateCollisionHeight.Status = m_movementInfo;
+            updateCollisionHeight.Status = GetMovementUpdateState();
             updateCollisionHeight.Height = height;
             updateCollisionHeight.Scale = GetObjectScale();
             SendMessageToSet(updateCollisionHeight, false);
@@ -5010,7 +5102,7 @@ namespace Game.Entities
 
         bool IsFriendlyArea(AreaTableRecord areaEntry)
         {
-            Cypher.Assert(areaEntry != null);
+            Forever.Assert(areaEntry != null);
 
             var factionTemplate = GetFactionTemplateEntry();
             if (factionTemplate == null)
@@ -5244,8 +5336,15 @@ namespace Game.Entities
         }
 
         //Guild
+        public void InitializeGuildClubMemberId()
+        {
+            ulong id = Game.Services.Classic.ClassicSocialSupport.CreateClubMemberId(GetGUID(), (uint)Global.WorldMgr.GetRealm().Id.Index);
+            SetUpdateFieldValue(m_values.ModifyValue(m_playerData).ModifyValue(m_playerData.GuildClubMemberID), id);
+        }
+
         public void SetInGuild(long guildId)
         {
+            InitializeGuildClubMemberId();
             if (guildId != 0)
             {
                 SetUpdateFieldValue(m_values.ModifyValue(m_unitData).ModifyValue(m_unitData.GuildGUID), ObjectGuid.Create(HighGuid.Guild, guildId));
@@ -5385,6 +5484,7 @@ namespace Game.Entities
 
         public void ToggleAFK()
         {
+            if(IsSelfSIControlled&&!IsAFK())return;
             if (IsAFK())
                 RemovePlayerFlag(PlayerFlags.AFK);
             else
@@ -6266,7 +6366,9 @@ namespace Game.Entities
         {
             // updates visibility of all objects around point of view for current player
             using var notifier = new VisibleNotifier(this);
-            Cell.VisitAllObjects(seerView, notifier, GetSightRange());
+            // a viewpoint that left the world (a mind-controlled creature's corpse despawned) falls back to the player
+            WorldObject viewpoint = seerView != null && seerView.IsInWorld && seerView.GetMap() == GetMap() ? seerView : this;
+            Cell.VisitAllObjects(viewpoint, notifier, GetSightRange());
             notifier.SendToSelf();   // send gathered data
         }
 
@@ -6405,6 +6507,20 @@ namespace Game.Entities
             SendPacket(new ResetWeeklyCurrency());
         }        
 
+        bool TryMarkAreaExplored(int areaBit)
+        {
+            if (areaBit < 0 || areaBit >= PlayerConst.ExploredZonesSize * 64)
+                return false;
+
+            int offset = areaBit / 64;
+            ulong mask = 1ul << (areaBit % 64);
+            if ((m_activePlayerData.ExploredZones[offset] & mask) != 0)
+                return false;
+
+            AddExploredZones(offset, mask);
+            return true;
+        }
+
         void CheckAreaExploreAndOutdoor()
         {
             if (!IsAlive())
@@ -6429,6 +6545,9 @@ namespace Game.Entities
                 return;
             }
 
+            if (areaEntry.AreaBit < 0)
+                return;
+
             int offset = areaEntry.AreaBit / ActivePlayerData.ExploredZonesBits;
             if (offset >= PlayerConst.ExploredZonesSize)
             {
@@ -6438,13 +6557,8 @@ namespace Game.Entities
                 return;
             }
 
-            ulong val = 1ul << (areaEntry.AreaBit % ActivePlayerData.ExploredZonesBits);
-            ulong currFields = m_activePlayerData.ExploredZones[offset];
-
-            if (!currFields.HasAnyFlag(val))
+            if (TryMarkAreaExplored(areaEntry.AreaBit))
             {
-                SetUpdateFieldFlagValue(ref m_values.ModifyValue(m_activePlayerData).ModifyValue(m_activePlayerData.ExploredZones, offset), val);
-
                 UpdateCriteria(CriteriaType.RevealWorldMapOverlay, GetAreaId());
 
                 if (areaEntry.ExplorationLevel > 0)
@@ -6503,9 +6617,9 @@ namespace Game.Entities
             SendPacket(new ExplorationExperience(Experience, Area));
         }
 
-        public void SendSysMessage(CypherStrings str, params object[] args)
+        public void SendSysMessage(ForeverStrings str, params object[] args)
         {
-            string input = ObjectMgr.GetCypherString(str);
+            string input = ObjectMgr.GetForeverString(str);
             string pattern = @"%(\d+(\.\d+)?)?(d|f|s|u)";
 
             int count = 0;
@@ -6627,8 +6741,8 @@ namespace Game.Entities
             if (isAddonMessage)
                 return;
 
-            if (!GetSession().IsServerControlled && target is siPlayer autonomous)
-                autonomous.Controller?.ReceivedWhisper(GetGUID());
+            if (!GetSession().IsSIControlled)
+                target.Controller?.ReceivedWhisper(GetGUID());
 
             data.Initialize(ChatMsg.WhisperInform, language, target, target, text);
             SendPacket(data);
@@ -6636,14 +6750,14 @@ namespace Game.Entities
             if (!IsAcceptWhispers() && !IsGameMaster() && !target.IsGameMaster())
             {
                 SetAcceptWhispers(true);
-                SendSysMessage(CypherStrings.CommandWhisperon);
+                SendSysMessage(ForeverStrings.CommandWhisperon);
             }
 
             // announce afk or dnd message
             if (target.IsAFK())
-                SendSysMessage(CypherStrings.PlayerAfk, target.GetName(), target.autoReplyMsg);
+                SendSysMessage(ForeverStrings.PlayerAfk, target.GetName(), target.autoReplyMsg);
             else if (target.IsDND())
-                SendSysMessage(CypherStrings.PlayerDnd, target.GetName(), target.autoReplyMsg);
+                SendSysMessage(ForeverStrings.PlayerDnd, target.GetName(), target.autoReplyMsg);
         }
 
         public override void Whisper(int textId, Player target, bool isBossWhisper = false)
@@ -7163,8 +7277,8 @@ namespace Game.Entities
             else
                 m_taxi.SetFlightMasterFactionTemplateId(0);
 
-            totalcost = (uint)ApplyClassicLegacyPriceMod(totalcost, 4);
-            firstcost = (uint)ApplyClassicLegacyPriceMod(firstcost, 4);
+            totalcost = (uint)ApplyClassicLegacyPriceMod(totalcost,Game.Systems.Legacy.LegacyEffectEngine.FlightPathPriceType);
+            firstcost = (uint)ApplyClassicLegacyPriceMod(firstcost,Game.Systems.Legacy.LegacyEffectEngine.FlightPathPriceType);
             if (money < totalcost)
             {
                 GetSession().SendActivateTaxiReply(ActivateTaxiReply.NotEnoughMoney);
@@ -7341,7 +7455,7 @@ namespace Game.Entities
         //new
         public int DoRandomRoll(int minimum, int maximum)
         {
-            Cypher.Assert(maximum <= 1000000);
+            Forever.Assert(maximum <= 1000000);
 
             int roll = RandomHelper.IRand(minimum, maximum);
 
@@ -7561,7 +7675,9 @@ namespace Game.Entities
         public void SetClientControl(Unit target, bool allowMove)
         {
             // a player can never client control nothing
-            Cypher.Assert(target != null);
+            Forever.Assert(target != null);
+
+            if (target == this && IsSelfSIControlled) allowMove = false;
 
             // don't allow possession to be overridden
             if (target.HasUnitState(UnitState.Charmed) && (GetGUID() != target.GetCharmerGUID()))
@@ -7594,6 +7710,7 @@ namespace Game.Entities
             }
 
             SetMovedUnit(target);
+            if (target == this && IsSelfSIControlled) m_playerMovingMe = null;
         }
 
         public Item GetWeaponForAttack(WeaponAttackType attackType, bool useable = false)
@@ -7676,7 +7793,7 @@ namespace Game.Entities
                 offItem.DeleteFromInventoryDB(trans);                   // deletes item from character's inventory
                 offItem.SaveToDB(trans);                                // recursive and not have transaction guard into self, item not in inventory and can be save standalone
 
-                string subject = ObjectMgr.GetCypherString(CypherStrings.NotEquippedItem);
+                string subject = ObjectMgr.GetForeverString(ForeverStrings.NotEquippedItem);
                 new MailDraft(subject, "There were problems with equipping one or several items").AddItem(offItem).SendMailTo(trans, this, new MailSender(this, MailStationery.Gm), MailCheckFlags.Copied);
 
                 DB.Characters.CommitTransaction(trans);

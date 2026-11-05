@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Framework.Configuration;
 
 namespace BattleNot;
 
@@ -37,12 +38,6 @@ static class Text
 
     public static bool ValidPlatform(string platform) => platform is "Win" or "Wn64" or "WinA" or "Mac" or "Mc64" or "MacA";
 
-    public static string DisplayName(string username)
-    {
-        int hash = username.IndexOf('#');
-        return hash >= 0 ? "WoW" + username[(hash + 1)..] : username;
-    }
-
     public static string Ticket()
     {
         Span<byte> bytes = stackalloc byte[20];
@@ -53,15 +48,13 @@ static class Text
 
 sealed class LoginRest
 {
-    readonly AppConfig _config;
     readonly BnotDb _db;
     readonly RealmCatalog _realms;
     readonly bool _http;
     string _announcedVersion = "";
 
-    public LoginRest(AppConfig config, BnotDb db, RealmCatalog realms, bool devWildcard)
+    public LoginRest(BnotDb db, RealmCatalog realms, bool devWildcard)
     {
-        _config = config;
         _db = db;
         _realms = realms;
         _http = devWildcard;
@@ -71,10 +64,13 @@ sealed class LoginRest
     {
         app.MapGet("/bnetserver/login/", (Delegate)Form);
         app.MapGet("/bnetserver/gameAccounts/", (Delegate)GameAccounts);
+        app.MapPost("/bnetserver/gameAccounts/", (Delegate)CreateGameAccount);
         app.MapGet("/bnetserver/portal/", (Delegate)Portal);
         app.MapGet("/bnetserver/versions/", (Delegate)Versions);
         app.MapGet("/bnetserver/realms/", (Delegate)Realms);
         app.MapGet("/bnetserver/version/", (Delegate)Version);
+        app.MapGet("/bnetserver/products/", (Delegate)Products);
+        app.MapGet("/bnetserver/products.json", (Delegate)Products);
         app.MapPost("/bnetserver/login/", (Delegate)Login);
         app.MapPost("/bnetserver/login/srp/", (Delegate)Srp);
         app.MapPost("/bnetserver/login/authenticator/", (Delegate)Authenticator);
@@ -82,14 +78,16 @@ sealed class LoginRest
         app.MapPost("/bnetserver/refreshLoginTicket/", (Delegate)Refresh);
     }
 
-    string HostFor(IPAddress remote) => IPAddress.IsLoopback(remote) ? _config.LocalAddress : _config.ExternalAddress;
+    string HostFor(IPAddress remote) => ConfigMgr.GetDefaultValue(
+        IPAddress.IsLoopback(remote) ? "LoginREST.LocalAddress" : "LoginREST.ExternalAddress", "trinity.actual.battle.net");
     string Scheme => _http ? "http" : "https";
 
     IResult Form(HttpContext ctx)
     {
         SessionId(ctx);
         string host = HostFor(ctx.Connection.RemoteIpAddress ?? IPAddress.Loopback);
-        string url = $"{Scheme}://{host}:{_config.RestPort}/bnetserver/login/srp/";
+        int port = ConfigMgr.GetDefaultValue("LoginREST.Port", 8081);
+        string url = $"{Scheme}://{host}:{port}/bnetserver/login/srp/";
         string json =
             "{\"type\":\"LOGIN_FORM\",\"inputs\":[" +
             "{\"input_id\":\"account_name\",\"type\":\"text\",\"label\":\"E-mail\",\"max_length\":320}," +
@@ -99,14 +97,50 @@ sealed class LoginRest
         return Json(json);
     }
 
-    IResult Version(HttpContext ctx)
+    async Task<IResult> Products(HttpContext ctx)
     {
-        const string product = "wow_forever";
+        try
+        {
+            var catalog = await _db.Products.Load();
+            ctx.Response.Headers.CacheControl = "no-store";
+            return Results.Json(catalog, ProductCatalogJson.Options);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or JsonException)
+        {
+            Log.outError(LogFilter.Http, $"Product catalog unavailable: {ex.GetType().Name}: {ex.Message}");
+            return Results.Json(new { error = "invalid_product_catalog", message = ex.Message }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+
+    async Task<BnotProduct?> RequestedProduct(HttpContext ctx)
+    {
+        string id = ctx.Request.Query["product"].ToString();
+        BnotProductCatalog catalog;
+        try { catalog = await _db.Products.Load(); }
+        catch (Exception ex) when (ex is InvalidDataException or JsonException)
+        {
+            ctx.Items["productCatalogError"] = ex.Message;
+            return null;
+        }
+        return catalog.Products.FirstOrDefault(p => p.Enabled && p.Services.Provider == "bnot" &&
+            (id.Length == 0 || p.Id == id || p.Distribution.ProductCode == id));
+    }
+
+    async Task<IResult> Version(HttpContext ctx)
+    {
+        BnotProduct? definition = await RequestedProduct(ctx);
+        if (ProductFailure(ctx) is { } failure) return failure;
+        string product = definition?.Id ?? ctx.Request.Query["product"].ToString();
         const string platform = "win64";
-        BuildInfo? target = _realms.TargetVersion();
-        if (target == null)
+        string selectedRealm = ctx.Request.Query["realm"].ToString();
+        var matching = definition == null ? Array.Empty<RealmEntry>() : _realms.Snapshot()
+            .Where(realm => definition.SupportsRealmBuild(realm.Build) &&
+                (selectedRealm.Length == 0 || realm.Id.ToString() == selectedRealm)).ToArray();
+        uint targetBuild = matching.GroupBy(realm => realm.Build).OrderByDescending(group => group.Count())
+            .ThenBy(group => group.Key).Select(group => group.Key).FirstOrDefault();
+        if (targetBuild == 0)
             return Json(VersionJson(product, "", 0, platform, "unavailable", true));
-        string version = target.Major + "." + target.Minor + "." + target.Revision + "." + target.Build;
+        _realms.TryVersionText(targetBuild, out string version);
         if (version != _announcedVersion)
         {
             _announcedVersion = version;
@@ -115,9 +149,13 @@ sealed class LoginRest
         string client = ctx.Request.Query["client"].ToString();
         string asked = ctx.Request.Query["platform"].ToString();
         bool wrongPlatform = asked.Length > 0 && !string.Equals(asked, platform, StringComparison.OrdinalIgnoreCase);
-        bool wrongBuild = client.Length > 0 && !string.Equals(client, version, StringComparison.OrdinalIgnoreCase);
+        uint clientBuild = 0;
+        bool knownClient = uint.TryParse(client, out clientBuild);
+        if (!knownClient) knownClient = TryVersion(client, out _, out _, out _, out clientBuild);
+        bool wrongBuild = client.Length > 0 && (!knownClient || clientBuild != targetBuild ||
+            (version.Length > 0 && client.Contains('.') && !string.Equals(client, version, StringComparison.OrdinalIgnoreCase)));
         string status = wrongPlatform ? "unavailable" : wrongBuild ? "patch" : "playable";
-        return Json(VersionJson(product, version, target.Build, platform, status, wrongPlatform || wrongBuild));
+        return Json(VersionJson(product, version, targetBuild, platform, status, wrongPlatform || wrongBuild));
     }
 
     static string VersionJson(string product, string version, uint build, string platform, string status, bool patchRequired)
@@ -131,35 +169,40 @@ sealed class LoginRest
             ",\"patchRequired\":" + (patchRequired ? "true" : "false") + "}";
     }
 
-    IResult Versions()
+    async Task<IResult> Versions(HttpContext ctx)
     {
+        BnotProduct? product = await RequestedProduct(ctx);
+        if (ProductFailure(ctx) is { } failure) return failure;
         var parts = new List<string>();
-        foreach (BuildInfo info in _realms.ClientVersions())
+        foreach (uint build in _realms.Snapshot().Where(realm => product != null && product.SupportsRealmBuild(realm.Build))
+            .Select(realm => realm.Build).Distinct().OrderBy(build => build))
         {
-            string version = info.Major + "." + info.Minor + "." + info.Revision + "." + info.Build;
-            parts.Add("{\"version\":" + JsonText.Quote(version) + ",\"build\":" + info.Build + "}");
+            _realms.TryVersionText(build, out string version);
+            parts.Add("{\"product\":" + JsonText.Quote(product!.Id) + ",\"version\":" + JsonText.Quote(version) + ",\"build\":" + build + "}");
         }
         return Json("{\"versions\":[" + string.Join(",", parts) + "]}");
     }
 
-    IResult Realms(HttpContext ctx)
+    async Task<IResult> Realms(HttpContext ctx)
     {
+        BnotProduct? product = await RequestedProduct(ctx);
+        if (ProductFailure(ctx) is { } failure) return failure;
         var parts = new List<string>();
-        uint major, minor, revision, build;
-        if (TryVersion(ctx.Request.Query["version"].ToString(), out major, out minor, out revision, out build))
+        if (product != null)
         {
-            foreach (RealmEntry realm in _realms.OnlineForVersion(major, minor, revision, build))
+            foreach (RealmEntry realm in _realms.Snapshot().Where(realm => product.SupportsRealmBuild(realm.Build)))
             {
                 string version;
                 _realms.TryVersionText(realm.Build, out version);
                 string address = realm.Addresses.Count > 0 ? realm.Addresses[0].ToString() : "";
                 parts.Add("{\"id\":" + realm.Id +
+                    ",\"product\":" + JsonText.Quote(product.Id) +
                     ",\"name\":" + JsonText.Quote(realm.Name) +
                     ",\"address\":" + JsonText.Quote(address) +
                     ",\"port\":" + realm.Port +
                     ",\"type\":" + realm.Type +
                     ",\"population\":" + realm.Population.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                    ",\"status\":\"online\"" +
+                    ",\"status\":" + JsonText.Quote(realm.WorldUp ? "online" : "offline") +
                     ",\"version\":" + JsonText.Quote(version) +
                     ",\"build\":" + realm.Build +
                     ",\"flags\":" + realm.LegacyFlags +
@@ -170,6 +213,9 @@ sealed class LoginRest
         }
         return Json("{\"realms\":[" + string.Join(",", parts) + "]}");
     }
+
+    static IResult? ProductFailure(HttpContext ctx) => ctx.Items.TryGetValue("productCatalogError", out var error)
+        ? Results.Json(new { error = "invalid_product_catalog", message = error }, statusCode: StatusCodes.Status503ServiceUnavailable) : null;
 
     static bool TryVersion(string text, out uint major, out uint minor, out uint revision, out uint build)
     {
@@ -188,7 +234,8 @@ sealed class LoginRest
     IResult Portal(HttpContext ctx)
     {
         string host = HostFor(ctx.Connection.RemoteIpAddress ?? IPAddress.Loopback);
-        return Results.Text($"{host}:{_config.BattlenetPort}", "text/plain");
+        int port = ConfigMgr.GetDefaultValue("BattlenetPort", 1119);
+        return Results.Text($"{host}:{port}", "text/plain");
     }
 
     async Task<IResult> GameAccounts(HttpContext ctx)
@@ -197,16 +244,44 @@ sealed class LoginRest
         if (string.IsNullOrEmpty(ticket))
             return Results.StatusCode(401);
         var accounts = await _db.Auth.GameAccounts(ticket);
+        if (accounts == null) return Results.StatusCode(401);
+        ctx.Response.Headers.CacheControl = "no-store";
         var parts = new List<string>();
         foreach (var account in accounts)
         {
-            string row = "{\"display_name\":" + JsonText.Quote(Text.DisplayName(account.Name)) + ",\"expansion\":" + account.Expansion;
+            string row = "{\"id\":" + account.Id + ",\"account_name\":" + JsonText.Quote(account.Name) + ",\"display_name\":" + JsonText.Quote(account.Name) + ",\"expansion\":" + account.Expansion;
             if (account.Suspended || account.Banned)
                 row += ",\"is_suspended\":" + (account.Suspended ? "true" : "false") + ",\"is_banned\":" + (account.Banned ? "true" : "false") +
                        ",\"suspension_reason\":" + JsonText.Quote(account.Reason) + ",\"suspension_expires\":" + account.Expires;
             parts.Add(row + "}");
         }
-        return Json("{\"game_accounts\":[" + string.Join(",", parts) + "]}");
+        return Json("{\"can_create_game_account\":true,\"can_name_game_account\":true,\"game_accounts\":[" + string.Join(",", parts) + "]}");
+    }
+
+    async Task<IResult> CreateGameAccount(HttpContext ctx)
+    {
+        string? ticket=Authorization(ctx);
+        if (string.IsNullOrEmpty(ticket)) return Results.StatusCode(401);
+        string ip=(ctx.Connection.RemoteIpAddress ?? IPAddress.Loopback).ToString();
+        if (await _db.Auth.IsIpBanned(ip)) return Results.StatusCode(403);
+        try {
+            using JsonDocument? request = await ReadJson(ctx);
+            if (request == null || request.RootElement.ValueKind != JsonValueKind.Object) return Results.Json(new { ok=false,error="username" },statusCode:400);
+            string? username = null;
+            if (request.RootElement.TryGetProperty("username",out var value)) {
+                if (value.ValueKind != JsonValueKind.String) return Results.Json(new { ok=false,error="username" },statusCode:400);
+                username = value.GetString() ?? "";
+            }
+            var created=await _db.Auth.CreateGameAccount(ticket,ip,username);
+            if (created.Error=="unauthorized") return Results.StatusCode(401);
+            if (created.Error!=null) return Results.Json(new { ok=false,error=created.Error },statusCode:created.Error=="locked" ? 403 : created.Error=="username" ? 400 : created.Error=="limit" || created.Error=="username_exists" ? 409 : 503);
+            ctx.Response.Headers.CacheControl="no-store";
+            return Results.Json(new { ok=true,game_account=new { id=created.Id,account_name=created.Name,display_name=created.Name } });
+        }
+        catch (Exception ex) {
+            Log.outError(LogFilter.Http,"Game account creation failed: "+ex.GetType().Name);
+            return Results.Json(new { ok=false,error="failed" },statusCode:503);
+        }
     }
 
     async Task<IResult> Srp(HttpContext ctx)
@@ -270,13 +345,14 @@ sealed class LoginRest
         LoginState state = States[SessionId(ctx)];
         if (!ok)
         {
-            if (!row.Banned && _config.WrongPassMaxCount > 0)
+            int maxCount = ConfigMgr.GetDefaultValue("WrongPass.MaxCount", 0);
+            if (!row.Banned && maxCount > 0)
             {
                 await _db.Auth.NoteFailedLogin(row.Id);
-                if (row.FailedLogins + 1 >= _config.WrongPassMaxCount)
+                if (row.FailedLogins + 1 >= maxCount)
                 {
                     string ip = (ctx.Connection.RemoteIpAddress ?? IPAddress.Loopback).ToString();
-                    await _db.Auth.BanIp(ip, _config.WrongPassBanTime);
+                    await _db.Auth.BanIp(ip, ConfigMgr.GetDefaultValue("WrongPass.BanTime", 600));
                     await _db.Auth.ResetFailedLogins(row.Id);
                 }
             }
@@ -301,7 +377,7 @@ sealed class LoginRest
         uint now = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (ticket.Length == 0 || row.TicketExpiry < now)
             ticket = Text.Ticket();
-        uint expiry = now + (uint)_config.TicketDuration;
+        uint expiry = now + (uint)ConfigMgr.GetDefaultValue("LoginREST.TicketDuration", 3600);
         await _db.Auth.SetTicket(row.Id, ticket, expiry);
         string json = "{\"authentication_state\":\"DONE\",\"login_ticket\":" + JsonText.Quote(ticket);
         if (m2 != null)
@@ -341,7 +417,7 @@ sealed class LoginRest
         state.AuthSecret = "";
         state.AuthM2 = "";
         string ticket = Text.Ticket();
-        uint expiry = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds() + (uint)_config.TicketDuration;
+        uint expiry = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds() + (uint)ConfigMgr.GetDefaultValue("LoginREST.TicketDuration", 3600);
         await _db.Auth.SetTicket(id, ticket, expiry);
         string json = "{\"authentication_state\":\"DONE\",\"login_ticket\":" + JsonText.Quote(ticket);
         if (m2.Length > 0)
@@ -388,7 +464,7 @@ sealed class LoginRest
         uint now = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (expiry == null || expiry <= now)
             return Json("{\"is_expired\":true}");
-        uint next = now + (uint)_config.TicketDuration;
+        uint next = now + (uint)ConfigMgr.GetDefaultValue("LoginREST.TicketDuration", 3600);
         await _db.Auth.RefreshTicket(ticket, next);
         return Json("{\"login_ticket_expiry\":" + next + "}");
     }

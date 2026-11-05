@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Cryptography;
@@ -37,7 +37,8 @@ namespace Game
             stmt.SetInt8(1, (sbyte)SrpVersion.v2);
             stmt.SetBytes(2, salt);
             stmt.SetBytes(3, verifier);
-            if (!DB.Login.DirectExecute(stmt)) return AccountOpResult.DBInternalError;
+            if (!DB.Login.DirectExecuteWithAccountId(stmt, "bnot_accounts", "bnot_account_id_allocator", "bnet-account-create", 4))
+                return AccountOpResult.DBInternalError;
 
             int newAccountId = GetId(email);
             if (newAccountId <= 0) return AccountOpResult.DBInternalError;
@@ -46,7 +47,9 @@ namespace Game
             {
                 gameAccountName = newAccountId + "#1";
                 string gameAccountPassword = password.Substring(0, Math.Min(16, password.Length));
-                Global.AccountMgr.CreateAccount(gameAccountName, gameAccountPassword.ToUpper(), email, newAccountId, 1);
+                AccountOpResult gameAccountResult = Global.AccountMgr.CreateAccount(gameAccountName, gameAccountPassword.ToUpper(), email, newAccountId, 1);
+                if (gameAccountResult != AccountOpResult.Ok)
+                    return gameAccountResult;
             }
 
             return AccountOpResult.Ok;

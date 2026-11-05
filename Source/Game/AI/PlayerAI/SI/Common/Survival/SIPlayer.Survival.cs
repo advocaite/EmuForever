@@ -1,6 +1,7 @@
 using Framework.Constants;
 using Game.Entities;
 using Game.Spells;
+using Game.Movement;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -22,17 +23,21 @@ namespace Game.AI
 
         // Death recovery state
         long _deathAt, _ghostStartedAt, _nextReclaim;
-        float _ghostDistance;
-        Position _ghostOrigin, _lastGhostPosition, _reclaimPoint;
+        Position _reclaimPoint;
         readonly List<Position> _failedRecoveryPoints = new();
         long _ghostProgressAt, _nextCorpseRouteAttempt;
         int _failedCorpseRoutes;
         Position _ghostProgressPosition;
+        ObjectGuid _waitingSpiritGuide;
+        bool _spiritGuideSpacing;
+        int _spiritGuideSpacingAttempt;
+        long _nextSpiritGuideSpacing;
         public string Recovery { get; private set; } = "Alive";
         const float ReclaimTravelArrival = 1.25f;
+        const float FleeArrival = 4;
         const float ReclaimReadyDistance = 1.5f;
 
-        public static bool MustEscape(float health, bool combat, bool recovering) => combat && health <= .20f;
+        public static bool MustEscape(float health, bool combat) => combat && health <= .20f;
 
         Creature[] ActiveMobAttackers() => me.GetCombatManager().GetPvECombatRefs().Values.Select(reference => reference.GetOther(me))
             .Concat(me.GetAttackers()).OfType<Creature>().Where(creature => creature.IsAlive() && !creature.IsInEvadeMode())
@@ -55,9 +60,6 @@ namespace Game.AI
 
         void NoteGameplayProgress() { _lastActionProgress = Now; PruneLearnedAvoidance(); }
 
-        static (int Map, int X, int Y) RouteCell(int map, Position point) =>
-            (map, (int)MathF.Floor(point.GetPositionX() / 12), (int)MathF.Floor(point.GetPositionY() / 12));
-
         bool IsLearnedRouteBlocked(Position point) => point != null &&
             _blockedRoutes.Contains(me.GetMapId(), V(point), Now);
 
@@ -72,12 +74,9 @@ namespace Game.AI
         void PruneLearnedAvoidance()
         {
             _blockedRoutes.Prune(Now);
-            foreach (var interaction in _failedQuestInteractions.Where(pair => pair.Value <= Now).Select(pair => pair.Key).ToArray())
-                _failedQuestInteractions.Remove(interaction);
-            foreach (var entry in _dangerousEntries.Where(pair => pair.Value <= Now).Select(pair => pair.Key).ToArray())
-                _dangerousEntries.Remove(entry);
-            foreach (var target in _dangerousTargets.Where(pair => pair.Value <= Now).Select(pair => pair.Key).ToArray())
-                _dangerousTargets.Remove(target);
+            PruneExpired(_failedQuestInteractions);
+            PruneExpired(_dangerousEntries);
+            PruneExpired(_dangerousTargets);
         }
 
         bool MayRetryQuestInteraction(int quest, ObjectGuid giver) => _failedQuestInteractions.GetValueOrDefault((quest, giver)) <= Now;
@@ -96,14 +95,14 @@ namespace Game.AI
             if (_goal == "flee" && me.GetHealthPct() > 20)
             {
                 _goal = _escapeReturnGoal; _fleeDestination = null;
-                me.StopMoving(); ClearRoute();
+                ClearRoute();
                 return;
             }
-            if (!MustEscape(me.GetHealthPct() / 100f, me.IsInCombat() || attackers.Length != 0, _recovering)) return;
+            if (!MustEscape(me.GetHealthPct() / 100f, me.IsInCombat() || attackers.Length != 0)) return;
             if (_goal == "flee") return;
             _escapeReturnGoal = _goal;
             _goal = "flee"; _fleeDestination = null; _dangerUntil = Now + 60000;
-            me.CastStop(); me.AttackStop(); me.GetMotionMaster().Clear(); me.StopMoving();
+            me.CastStop(); me.AttackStop(); HaltSpline();
             Report("escape_started", "Escaping current attackers");
         }
 
@@ -118,7 +117,8 @@ namespace Game.AI
                 return;
             }
             Status = "Escaping combat";
-            if (_fleeDestination == null || me.GetDistance(_fleeDestination) < 3 || ((siPlayer)me).NavigationBlocked)
+            // A new escape point once this one is reached (the same 4 yards Travel calls arrival) or unreachable.
+            if (_fleeDestination == null || me.GetExactDist2d(_fleeDestination) <= FleeArrival + .5f || me.NavigationBlocked)
             {
                 SIRecoveryHazard[] threats = RecoveryHazards();
                 float dx = 0, dy = 0;
@@ -140,7 +140,7 @@ namespace Game.AI
                     _fleeDestination = ground; break;
                 }
             }
-            if (_fleeDestination != null) Travel(_fleeDestination, "Escaping combat");
+            if (_fleeDestination != null) Travel(_fleeDestination, "Escaping combat", FleeArrival);
         }
 
         Position Ground(float x, float y, float z)
@@ -151,6 +151,20 @@ namespace Game.AI
             // evidence of ground: accepting it invented corpse/flee points below the terrain.
             return float.IsFinite(supportingFloor) && supportingFloor > MapConst.InvalidHeight &&
                 float.IsFinite(groundZ) && Math.Abs(groundZ - z) < 40 ? new Position(x, y, groundZ) : null;
+        }
+
+        // Heal (or shield) a friendly player with a spell that can target allies. Badly hurt: fastest cast first;
+        // otherwise the slower, bigger heals. Ordinary Cast checks range, sight, mana and an existing HoT.
+        bool HealAlly(Unit ally,bool instantOnly=false)
+        {
+            if (ally == null || ally == me || !ally.IsAlive() || me.IsHostileTo(ally)) return false;
+            bool urgent = ally.GetHealthPct() < 60;
+            var heals = _knownSpells.Where(info => (!instantOnly||SIInstantAttackPolicy.Instant(info))&&(IsHeal(info) || IsShield(info)) && info.GetEffects().Any(effect =>
+                    PartyBuffTarget(effect.TargetA.GetTarget()) || PartyBuffTarget(effect.TargetB.GetTarget())));
+            foreach (SpellInfo spell in urgent ? heals.OrderBy(CastMs) : heals.OrderByDescending(CastMs))
+                if (Cast(spell, ally,keepMoving:instantOnly)) return true;
+            return false;
+            static int CastMs(SpellInfo info) => info.CastTimeEntry?.Base ?? 0;
         }
 
         // Emergency self-heals and shields at low health (cheapest cast time first).
@@ -168,6 +182,23 @@ namespace Game.AI
             effect.IsAura(AuraType.ModHealthRegen) || effect.IsAura(AuraType.ModTotalHealthRegen);
         static bool RestoresPower(SpellEffectInfo effect) => effect.IsAura(AuraType.PeriodicEnergize) ||
             effect.IsAura(AuraType.ModPowerRegen) || effect.IsAura(AuraType.ModTotalPowerRegen);
+        static bool RestRecoverySpell(SpellInfo spell) => spell.GetSpellSpecific() is
+            SpellSpecificType.Food or SpellSpecificType.Drink or SpellSpecificType.FoodAndDrink ||
+            spell.HasAuraInterruptFlag(SpellAuraInterruptFlags.Standing);
+
+        // Which kinds of resting recovery (food, drink, bandage) are running now.
+        (bool Health, bool Mana) RecoveryAuras()
+        {
+            bool health = false, mana = false;
+            foreach (var pair in me.GetAppliedAuras())
+            {
+                var aura = pair.Value.GetBase();
+                if (!pair.Value.IsPositive() || aura.IsPermanent() || aura.GetSpellInfo().IsPassive() || !RestRecoverySpell(aura.GetSpellInfo())) continue;
+                var effects = aura.GetSpellInfo().GetEffects();
+                health |= effects.Any(RestoresHealth); mana |= effects.Any(RestoresPower);
+            }
+            return (health, mana);
+        }
 
         bool HasUsefulRecoveryAura(bool fullRecovery=false)
         {
@@ -175,10 +206,9 @@ namespace Game.AI
             bool health = fullRecovery?me.GetHealth()<me.GetMaxHealth():me.GetHealthPct()<99;
             bool mana = me.GetMaxPower(PowerType.Mana)>0&&
                 (fullRecovery?me.GetPower(PowerType.Mana)<me.GetMaxPower(PowerType.Mana):me.GetPowerPct(PowerType.Mana)<95);
-            return me.GetAppliedAuras().Any(pair => pair.Value.IsPositive() && !pair.Value.GetBase().IsPermanent() &&
-                !pair.Value.GetBase().GetSpellInfo().IsPassive() && pair.Value.GetBase().GetSpellInfo().GetEffects().Any(effect =>
-                health && RestoresHealth(effect) ||
-                mana && RestoresPower(effect)));
+            if (!health && !mana) return false;
+            var running = RecoveryAuras();
+            return health && running.Health || mana && running.Mana;
         }
 
         // Food, drink and other recovery items through the ordinary use-item path.
@@ -186,15 +216,11 @@ namespace Game.AI
         {
             if (Now < _nextConsumableCheck || !me.IsAlive() || me.IsInCombat() || me.IsNonMeleeSpellCast(false, skipAutorepeat: true)) return false;
             _nextConsumableCheck = Now + 2000;
-            bool healthAura = false, manaAura = false;
-            foreach (var pair in me.GetAppliedAuras())
-            {
-                if (!pair.Value.IsPositive() || pair.Value.GetBase().GetSpellInfo().IsPassive() || pair.Value.GetBase().IsPermanent()) continue;
-                var effects = pair.Value.GetBase().GetSpellInfo().GetEffects();
-                healthAura |= effects.Any(RestoresHealth); manaAura |= effects.Any(RestoresPower);
-            }
+            var (healthAura, manaAura) = RecoveryAuras();
             var needs = SIRecoveryConsumables.Needs(me.GetHealthPct(), me.GetPowerPct(PowerType.Mana),
-                me.GetMaxPower(PowerType.Mana) > 0, healthAura, manaAura, fullRecovery?100:50);
+                me.GetMaxPower(PowerType.Mana) > 0, healthAura, manaAura,
+                fullRecovery ? 100 : _recovering ? 99 : _resting ? SIProvisionPolicy.RecoveredHealth(me.GetClass()) : SIProvisionPolicy.HealthThreshold(me.GetClass()),
+                fullRecovery ? 100 : _recovering ? 95 : _resting ? SIProvisionPolicy.RecoveredMana(me.GetClass()) : SIProvisionPolicy.ManaThreshold(me.GetClass()));
             bool healthNeeded = needs.Health, manaNeeded = needs.Mana;
             if (!healthNeeded && !manaNeeded) return false;
             var candidates = new List<(Item Item, SpellInfo Spell)>();
@@ -203,20 +229,27 @@ namespace Game.AI
                 foreach (var effect in item.GetEffects().Where(effect => effect.TriggerType == ItemSpelltriggerType.OnUse))
                 {
                     SpellInfo spell = Global.SpellMgr.GetSpellInfo(effect.SpellID, me.GetMap().GetDifficultyID());
-                    if (spell != null && !spell.IsPassive()) candidates.Add((item, spell));
+                    if (spell != null && !spell.IsPassive() &&
+                        (Provision(item.GetTemplate(), false) || Provision(item.GetTemplate(), true) ||
+                         item.GetTemplate().GetClass() == ItemClass.Consumable && item.GetTemplate().GetSubClass().Consumable == ItemSubClassConsumable.Bandage))
+                        candidates.Add((item, spell));
                 }
                 return true;
             });
-            foreach (var (item, spell) in candidates)
+            // Bandages (channelled heals) first: free and quick, then food while Recently Bandaged.
+            bool recentlyBandaged = me.HasAura(RecentlyBandaged);
+            foreach (var (item, spell) in candidates.OrderByDescending(candidate => me.GetClass() == Class.Mage &&
+                candidate.Item.GetTemplate().GetSubClass().Consumable == ItemSubClassConsumable.FoodDrink ? 2 : candidate.Spell.IsChanneled() ? 1 : 0)
+                .ThenByDescending(candidate => candidate.Item.GetTemplate().GetBaseRequiredLevel()))
             {
+                if (spell.IsChanneled() && recentlyBandaged) continue;
                 bool heals = spell.GetEffects().Any(effect => RestoresHealth(effect));
                 bool restoresMana = spell.GetEffects().Any(effect => RestoresPower(effect));
                 if (!(heals && healthNeeded || restoresMana && manaNeeded)) continue;
                 if (!me.GetSpellHistory().IsReady(spell, item.GetEntry()) || me.CanUseItem(item) != InventoryResult.Ok) continue;
                 bool alreadyRecovering = me.GetAppliedAuras().Any(pair => pair.Value.GetBase().GetSpellInfo().Id == spell.Id);
                 if (alreadyRecovering) continue;
-                CancelTravel();
-                if (me.IsMounted()) me.RemoveAurasByType(AuraType.Mounted);
+                CancelTravel(); Dismount();
                 if (!me.GetSession().UseItemForSI(item, spell.Id)) continue;
                 Report("consumable_started", $"Started recovery item {item.GetEntry()}");
                 return true;
@@ -227,30 +260,50 @@ namespace Game.AI
         bool PowerRecovered(float health, float mana) =>
             me.GetHealthPct() >= health && (me.GetMaxPower(PowerType.Mana) == 0 || me.GetPowerPct(PowerType.Mana) >= mana);
 
-        // After death or escape: rest to 99% health / 95% mana and restore buffs before resuming.
-        bool Recuperate()
+        void SitDown() { if (me.GetStandState() != UnitStandStateType.Sit) me.SetStandState(UnitStandStateType.Sit); }
+
+        // One resting action shared by death recovery and ordinary rest: keep eating and drinking,
+        // start missing food or drink, make or buy supplies, rebuff, then self-heal below `healBelow`.
+        bool RecoveryAction(float healBelow)
         {
-            if (!_recovering || me.IsInCombat()) return false;
-            Recovery = "Recuperating";
-            CancelTravel();
-            Status = "Recovering health, power and buffs";
             if (HasUsefulRecoveryAura())
             {
                 // Eating must not prevent starting a drink (or the reverse). Native
                 // item cooldowns still govern the next request; existing auras continue.
                 TryRecoveryConsumable(); return true;
             }
-            if (Buff()) return true;
-            if (TryRecoveryConsumable()) return true;
-            if (me.GetHealthPct() < 99)
+            if (TryRecoveryConsumable() || TryRecoverySupplies() || Buff()) return true;
+            if (me.GetHealthPct() < healBelow)
                 foreach (SpellInfo spell in _knownSpells.Where(IsHeal))
                     if (Cast(spell, me)) return true;
-            if (!PowerRecovered(99, 95))
-            {
-                if (me.GetStandState() != UnitStandStateType.Sit) me.SetStandState(UnitStandStateType.Sit);
-                return true;
-            }
-            if (me.GetStandState() != UnitStandStateType.Stand) me.SetStandState(UnitStandStateType.Stand);
+            return false;
+        }
+
+        // Recovery can travel (a supply trip), and travel checks recovery again before boarding a flight
+        // (TickJourneyFlight). The outer Rest/Recuperate already owns this tick, so a nested call is a no-op;
+        // without this the cycle Rest -> vendor trip -> Travel -> flight -> Rest overflowed the map thread's stack.
+        bool _inRecoveryTick;
+        bool Recuperate() => NonReentrantRecovery(RecuperateTick);
+        bool Rest() => NonReentrantRecovery(RestTick);
+        bool NonReentrantRecovery(Func<bool> tick)
+        {
+            if (_inRecoveryTick) return false;
+            _inRecoveryTick = true;
+            try { return tick(); }
+            finally { _inRecoveryTick = false; }
+        }
+
+        // After death or escape: rest to 99% health / 95% mana and restore buffs before resuming.
+        bool RecuperateTick()
+        {
+            if (!_recovering || me.IsInCombat()) return false;
+            if (RecoverySupplyTrip && !HasUsefulRecoveryAura()) { TickVendorBehavior(); return true; }
+            Recovery = "Recuperating";
+            CancelTravel();
+            Status = "Recovering health, power and buffs";
+            if (RecoveryAction(99)) return true;
+            if (!PowerRecovered(99, 95)) { SitDown(); return true; }
+            StandUp();
             if (Buff()) return true;
             _recovering = false; _reclaimPoint = null; Recovery = "Alive";
             if (_goal == "rest" && !_operatorControlled) _goal = "quest";
@@ -260,15 +313,17 @@ namespace Game.AI
         }
 
         // Use the same readiness thresholds as optional pulls; otherwise a rejected pull can never recover.
-        bool Rest()
+        bool RestTick()
         {
             if (me.IsInCombat()) return false;
+            if (RecoverySupplyTrip && !HasUsefulRecoveryAura()) { TickVendorBehavior(); return true; }
             bool usesMana = me.GetPowerType() == PowerType.Mana && me.GetMaxPower(PowerType.Mana) > 0;
-            if (!_resting && (me.GetHealthPct() / 100f < SIPullSafety.MinimumHealth ||
-                usesMana && me.GetPowerPct(PowerType.Mana) / 100f < SIPullSafety.MinimumMana)) _resting = true;
-            // Ordinary recovery ends at pull readiness. Full recovery after death
-            // remains in Recuperate; do not turn each fight into a wait for 95% mana.
-            if (!_resting || SIPullSafety.RecoveryReady(me.GetHealthPct(), me.GetPowerPct(PowerType.Mana), usesMana))
+            if (!_resting && (me.GetHealthPct() < SIProvisionPolicy.HealthThreshold(me.GetClass()) ||
+                usesMana && me.GetPowerPct(PowerType.Mana) < SIProvisionPolicy.ManaThreshold(me.GetClass()))) _resting = true;
+            // Mages refill farther before another pull; other classes retain
+            // ordinary pull readiness. Death recovery remains in Recuperate.
+            if (!_resting || me.GetHealthPct() >= SIProvisionPolicy.RecoveredHealth(me.GetClass()) &&
+                (!usesMana || me.GetPowerPct(PowerType.Mana) >= SIProvisionPolicy.RecoveredMana(me.GetClass())))
             {
                 _resting = false;
                 if (me.GetStandState() == UnitStandStateType.Sit) me.SetStandState(UnitStandStateType.Stand);
@@ -276,18 +331,7 @@ namespace Game.AI
             }
             CancelTravel();
             Status = "Resting";
-            if (HasUsefulRecoveryAura())
-            {
-                // Eating must not prevent starting a drink (or the reverse). Native
-                // item cooldowns still govern the next request; existing auras continue.
-                TryRecoveryConsumable(); return true;
-            }
-            if (Buff()) return true;
-            if (TryRecoveryConsumable()) return true;
-            if (me.GetHealthPct() < 80)
-                foreach (SpellInfo spell in _knownSpells.Where(IsHeal))
-                    if (Cast(spell, me)) return true;
-            if (me.GetStandState() != UnitStandStateType.Sit) me.SetStandState(UnitStandStateType.Sit);
+            if (!RecoveryAction(80)) SitDown();
             return true;
         }
 
@@ -301,7 +345,8 @@ namespace Game.AI
                 Recovery = "AwaitingRelease";
                 if (_deathAt == 0)
                 {
-                    _deathAt = Now; _reclaimPoint = null; _failedRecoveryPoints.Clear(); _ghostStartedAt = 0; _ghostDistance = 0;
+                    _deathAt = Now; _reclaimPoint = null; _failedRecoveryPoints.Clear(); _ghostStartedAt = 0;
+                    _waitingSpiritGuide=ObjectGuid.Empty;_spiritGuideSpacing=false;_spiritGuideSpacingAttempt=0;_nextSpiritGuideSpacing=0;
                     Stop(); RememberLethalEnemies();
                 }
                 if (Now - _deathAt >= 2000)
@@ -311,10 +356,26 @@ namespace Game.AI
                 }
                 return;
             }
+            if(me.InBattleground())
+            {
+                // Native ReleaseSpirit/RepopAtGraveyard owns the destination.
+                // A BG ghost must never run to or reclaim its world corpse.
+                Recovery="SpiritHealer";Status="Waiting for the spirit guide";
+                // The ordinary nearby list belongs to the last living-world
+                // snapshot. Death returns before that snapshot is refreshed.
+                var healer=SpiritGuideCandidates()
+                    .Where(c=>c.IsAlive()&&c.IsAreaSpiritHealer()&&!me.IsHostileTo(c)&&me.IsWithinDistInMap(c,PlayerConst.MaxAreaSpiritHealerRange))
+                    .OrderByDescending(me.CanAcceptAreaSpiritHealFrom).ThenBy(me.GetDistance).FirstOrDefault();
+                if(healer==null){SetNavigation("Searching for the spirit guide",false);Status="Looking for the nearby spirit guide";return;}
+                if(SISpiritGuideWaiting.NeedsQueue(me.CanAcceptAreaSpiritHealFrom(healer),me.HasAura(BattlegroundConst.SpellWaitingForResurrect))&&Now>=_nextReclaim)
+                {_nextReclaim=Now+3000;me.GetSession().QueueAreaSpiritHealerForSI(healer);}
+                WaitBesideSpiritGuide(healer);
+                return;
+            }
             if (_ghostStartedAt == 0)
             {
-                _ghostStartedAt = _ghostProgressAt = Now; _ghostDistance = 0;
-                _ghostOrigin = _ghostProgressPosition = new Position(me.GetPosition());
+                _ghostStartedAt = _ghostProgressAt = Now;
+                _ghostProgressPosition = new Position(me.GetPosition());
                 _failedCorpseRoutes = 0;
             }
             if (_ghostProgressPosition.GetExactDist(me) >= 2)
@@ -322,8 +383,17 @@ namespace Game.AI
             Corpse corpse = me.GetCorpse();
             if(corpse==null||corpse.GetMap()!=me.GetMap())
             {
-                CancelTravel();Recovery="Blocked";Status="Waiting for a corpse on this map; spirit-healer resurrection is disabled";
-                Report("recovery_blocked",Status);return;
+                // A ghost with no corpse here (it expired, or was left in another map) waited forever. After 30 s
+                // it takes the spirit healer's resurrection a player would: alive, with resurrection sickness.
+                CancelTravel();
+                if(Now-_ghostStartedAt>=30000)
+                {
+                    Report("recovery_spirit_healer","No corpse on this map; resurrecting as at a spirit healer");
+                    me.ResurrectPlayer(.5f,applySickness:true);me.SpawnCorpseBones();
+                    return;
+                }
+                Recovery="Blocked";Status="Waiting for a corpse on this map";
+                return;
             }
             // Last resort for a corpse the mesh cannot reach (a ledge, a sealed room, a broken tile): the ghost
             // is invisible to the living and cannot be harmed, so moving it to the corpse is the outcome a
@@ -342,8 +412,6 @@ namespace Game.AI
                 _nextCorpseRouteAttempt=Now+5000;
             }
             if(Now<_nextCorpseRouteAttempt){Recovery="Blocked";Status="Retrying corpse route shortly; no spirit-healer resurrection";return;}
-            if (_lastGhostPosition != null) _ghostDistance += me.GetExactDist(_lastGhostPosition);
-            _lastGhostPosition = new Position(me.GetPosition());
             if (me.GetDistance(corpse) > 65)
             {
                 Recovery = "CorpseRun";
@@ -375,7 +443,7 @@ namespace Game.AI
             if (me.GetExactDist(_reclaimPoint) > ReclaimReadyDistance)
             {
                 Recovery = "CorpseRun";
-                if (Travel(_reclaimPoint, "Returning to a safe point near the corpse", ReclaimTravelArrival) == SIBehaviorResult.Failure &&
+                if (Travel(_reclaimPoint, "Returning to a safe point near the corpse", ReclaimTravelArrival, within3D: true) == SIBehaviorResult.Failure &&
                     me.GetExactDist(_reclaimPoint) > ReclaimReadyDistance)
                 { _failedRecoveryPoints.Add(_reclaimPoint); _reclaimPoint = null; }
                 return;
@@ -392,28 +460,51 @@ namespace Game.AI
 
         void OnResurrected()
         {
+            if(_spiritGuideSpacing)CancelTravel();
+            _spiritGuideSpacing=false;_waitingSpiritGuide=ObjectGuid.Empty;_nextSpiritGuideSpacing=0;
             if (_deathAt != 0 || _ghostStartedAt != 0 || Recovery is "CorpseRun" or "AwaitingReclaim" or "SpiritHealer") _recovering = true;
-            _deathAt = 0; _ghostStartedAt = 0; _lastGhostPosition = null; _reclaimPoint = null;
+            _deathAt = 0; _ghostStartedAt = 0; _reclaimPoint = null;
             _failedCorpseRoutes = 0; _ghostProgressPosition = null;
             Recovery = _recovering ? "Recuperating" : "Alive";
             BeginPreparation();
         }
 
-        // Hearthstone through the ordinary item cast (cooldown, cast time, interruption).
-        bool UseHearthstone(out string reason)
+        // Always query around the ghost's current position, including immediately
+        // after the native graveyard transfer. Never reuse the corpse-area list.
+        internal List<Creature> SpiritGuideCandidates()
         {
-            reason = null;
-            if (!me.IsAlive() || me.IsInCombat()) { reason = "SI hearth travel requires an alive player out of combat."; return false; }
-            Item hearth = null;
-            me.ForEachItem(ItemSearchLocation.Inventory, item => { if (item.GetEntry() == 6948) { hearth = item; return false; } return true; });
-            if (hearth == null) { reason = "The SI player has no hearthstone."; return false; }
-            var effect = hearth.GetEffects().FirstOrDefault(value => value.TriggerType == ItemSpelltriggerType.OnUse);
-            SpellInfo spell = effect != null ? Global.SpellMgr.GetSpellInfo(effect.SpellID, me.GetMap().GetDifficultyID()) : null;
-            if (spell == null || !me.GetSpellHistory().IsReady(spell, hearth.GetEntry())) { reason = "Hearthstone is on cooldown."; return false; }
-            Stop();
-            if (!me.GetSession().UseItemForSI(hearth, spell.Id)) { reason = "World rejected the hearthstone cast."; return false; }
-            Report("hearth_started", "Using hearthstone");
-            return true;
+            var creatures=new List<Creature>();var objects=new List<GameObject>();
+            if(me.IsInWorld)SIMapObjectIndex.For(me.GetMap()).Collect(me,PlayerConst.MaxAreaSpiritHealerRange,creatures,objects);
+            return creatures;
+        }
+
+        void WaitBesideSpiritGuide(Creature healer)
+        {
+            if(_waitingSpiritGuide!=healer.GetGUID())
+            {
+                if(_spiritGuideSpacing)CancelTravel();
+                _waitingSpiritGuide=healer.GetGUID();_spiritGuideSpacing=false;_spiritGuideSpacingAttempt=0;_nextSpiritGuideSpacing=0;
+            }
+            if(_spiritGuideSpacing&&Moving){Status="Moving beside the spirit guide";return;}
+            _spiritGuideSpacing=false;
+            SetNavigation("Waiting for spirit-guide resurrection",false);
+            if(me.GetExactDist2d(healer)>=SISpiritGuideWaiting.MinimumSpacing||Now<_nextSpiritGuideSpacing||MovementSuspended)return;
+            _nextSpiritGuideSpacing=Now+3000;
+            var center=V(healer.GetPosition());var map=me.GetMap();var phase=me.GetPhaseShift();
+            ulong seed=HumanMovement.Seed^unchecked((ulong)_deathAt*0x9E3779B97F4A7C15UL);
+            for(int attempt=0;attempt<8;++attempt)
+            {
+                var endpoint=SISpiritGuideWaiting.Candidate(center,seed,_spiritGuideSpacingAttempt++);
+                var points=SIInteractionApproach.LocalPath(Here,endpoint,p=>FloorNear(p,1,2),
+                    (a,b)=>SISpiritGuideWaiting.WithinHealRange(a,center)&&SISpiritGuideWaiting.WithinHealRange(b,center)&&
+                        CorridorClear(a,b,(from,to)=>map.IsInLineOfSight(phase,from.X,from.Y,from.Z,to.X,to.Y,to.Z,LineOfSightChecks.All,ModelIgnoreFlags.Nothing)),
+                    SISpiritGuideWaiting.MaximumWalk);
+                if(points==null)continue;
+                CancelTravel();me.GetMotionMaster().Clear();
+                var move=new MoveSplineInit(me);move.MovebyPath(points);move.SetUncompressed();move.SetSmoothGroundPath(false);move.SetWalk(true);
+                if(move.Launch()<=0)continue;
+                _spiritGuideSpacing=true;SetNavigation("Walking to a spirit-guide waiting spot",false);Status="Moving beside the spirit guide";return;
+            }
         }
     }
 }

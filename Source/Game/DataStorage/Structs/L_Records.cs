@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -29,15 +29,15 @@ namespace Game.DataStorage
         public int Id;
         public LocalizedString Name;
         public LocalizedString Description;
-        private byte _typeID;
+        private byte _typeID = default;
         public byte Subtype;
         public sbyte Faction;
         public int IconTextureFileID;
         public int RewardsBgTextureFileID;
         public int PopupBgTextureFileID;
-        private byte _expansionLevel;
+        private byte _expansionLevel = default;
         public short MapID;
-        private ushort _difficultyID;
+        private ushort _difficultyID = default;
         public float MinGear;
         public byte GroupID;
         public byte OrderIndex;

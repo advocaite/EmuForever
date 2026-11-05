@@ -1,17 +1,15 @@
 using System.Net;
 using System.Net.Sockets;
+using Framework.Configuration;
 
 namespace BattleNot;
 
 sealed class RealmCatalog
 {
-    readonly AppConfig _config;
     readonly object _gate = new();
     List<RealmEntry> _realms = [];
     Dictionary<uint, BuildInfo> _builds = [];
     string _reachability = "";
-
-    public RealmCatalog(AppConfig config) => _config = config;
 
     public async Task Refresh(RealmDb db)
     {
@@ -68,6 +66,13 @@ sealed class RealmCatalog
             return _realms.ToArray();
     }
 
+    // Game-facing replies must use the build negotiated by this connection.
+    public IReadOnlyList<RealmEntry> Snapshot(uint clientBuild)
+    {
+        lock (_gate)
+            return _realms.Where(realm => realm.Build == clientBuild).ToArray();
+    }
+
     // Online realms whose gamebuild is the selected client, and only when that exact version is in build_info.
     public IReadOnlyList<RealmEntry> OnlineForVersion(uint major, uint minor, uint revision, uint build)
     {
@@ -87,16 +92,18 @@ sealed class RealmCatalog
             return _realms.FirstOrDefault(r => r.Address == address);
     }
 
-    public RealmEntry? FindContentSet(uint contentSet)
+    public RealmEntry? FindContentSet(uint contentSet, uint clientBuild)
     {
         lock (_gate)
-            return _realms.FirstOrDefault(r => r.ContentSetId == contentSet && r.PopulationState != 0);
+            return _realms.FirstOrDefault(r => r.Build == clientBuild && r.ContentSetId == contentSet && r.PopulationState != 0)
+                ?? _realms.FirstOrDefault(r => r.Build == clientBuild && r.ContentSetId == contentSet);
     }
 
-    public RealmEntry? FirstOnline()
+    public RealmEntry? FirstOnline(uint clientBuild)
     {
         lock (_gate)
-            return _realms.FirstOrDefault(r => r.PopulationState != 0) ?? _realms.FirstOrDefault();
+            return _realms.FirstOrDefault(r => r.Build == clientBuild && r.PopulationState != 0)
+                ?? _realms.FirstOrDefault(r => r.Build == clientBuild);
     }
 
     public IReadOnlyList<BuildInfo> ClientVersions()
@@ -185,17 +192,19 @@ sealed class RealmCatalog
         _ => 0
     };
 
-    public string SuperDistrictEntries()
+    public string SuperDistrictEntries(uint clientBuild)
     {
         var offered = new List<string>();
         var all = new List<string>();
-        IReadOnlyList<RealmEntry> realms = Snapshot();
+        IReadOnlyList<RealmEntry> realms = Snapshot(clientBuild);
         for (uint id = 1; id <= 5; id++)
         {
             string entry = $"{{\"superDistrictID\":{id},\"disallowLogin\":false,\"holdDownUntilTime\":0}}";
-            all.Add(entry);
             uint content = ContentSetFor(id);
-            if (content != 0 && realms.Any(r => r.ContentSetId == content && r.PopulationState != 0))
+            if (content == 0 || !realms.Any(r => r.ContentSetId == content))
+                continue;
+            all.Add(entry);
+            if (realms.Any(r => r.ContentSetId == content && r.PopulationState != 0))
                 offered.Add(entry);
         }
         return string.Join(",", offered.Count > 0 ? offered : all);
@@ -208,10 +217,17 @@ sealed class RealmCatalog
         return Fill(realm, clientBuild, security);
     }
 
+    // Ruleset selection still needs an entry when every matching world is offline.
+    // Preserve its offline population; joining remains subject to the normal online/security checks.
+    public string RealmSelectionJson(RealmEntry realm, uint clientBuild, byte security)
+    {
+        return realm.Build == clientBuild && security >= realm.AllowedSecurity ? Fill(realm, clientBuild, security) : "";
+    }
+
     public byte[] RealmListBlob(uint clientBuild, byte security, string subRegion)
     {
         var parts = new List<string>();
-        foreach (RealmEntry realm in Snapshot())
+        foreach (RealmEntry realm in Snapshot(clientBuild))
         {
             if (realm.SubRegion != subRegion)
                 continue;
@@ -228,7 +244,7 @@ sealed class RealmCatalog
             flags |= 0x01;
         byte population = security >= realm.AllowedSecurity || realm.PopulationState == 0 ? realm.PopulationState : (byte)7;
         uint config = realm.Type < 14 ? (uint)realm.Type + 1 : 1;
-        uint content = realm.ContentSetId != 0 ? realm.ContentSetId : _config.CfgContentSetID;
+        uint content = realm.ContentSetId != 0 ? realm.ContentSetId : ConfigMgr.GetDefaultValue("ContentSetID", 137u);
         string json =
             "{\"wowRealmAddress\":" + realm.Address +
             ",\"cfgTimezonesID\":1,\"populationState\":" + population +
@@ -258,7 +274,7 @@ sealed class RealmCatalog
             uint content = uint.TryParse(json.AsSpan(start, end - start), out uint parsed) ? parsed : 0;
             uint district = SuperDistrictFor(content);
             if (district == 0)
-                district = _config.SuperDistrictID;
+                district = ConfigMgr.GetDefaultValue("SuperDistrictID", 2u);
             string insert = ",\"superDistrictID\":" + district;
             json = json.Insert(end, insert);
             pos = end + insert.Length;

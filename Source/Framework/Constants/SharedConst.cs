@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using System;
@@ -190,6 +190,7 @@ namespace Framework.Constants
         public static readonly Milliseconds CreatureRegenInterval = (Seconds)2;
         public static readonly Milliseconds PetFocusRegenInterval = (Seconds)4;
         public static readonly Milliseconds CreatureNoPathEvadeTime = (Seconds)5;
+        public static readonly Milliseconds CreatureRespawnAggroGrace = (Seconds)3;
         public const int BoundaryVisualizeCreature = 15425;
         public const float BoundaryVisualizeCreatureScale = 0.25f;
         public const int BoundaryVisualizeStepSize = 1;
@@ -877,7 +878,7 @@ namespace Framework.Constants
         Rage = 1,
         Focus = 2,
         Energy = 3,
-        Happinnes = 4,
+        ComboPoints = 4,
         Runes = 5,
         RunicPower = 6,
         ///<summary>(unused 3.4.3)</summary> 
@@ -894,7 +895,6 @@ namespace Framework.Constants
         Chi = 12,
         ///<summary>(unused 3.4.3)</summary> 
         Insanity = 13,
-        ComboPoints = 14,
         ///<summary>(unused 3.4.3)</summary> 
         DemonicFury = 15,
         ///<summary>(unused 3.4.3)</summary> 
@@ -911,7 +911,9 @@ namespace Framework.Constants
         AlternateQuest = 23,
         AlternateEncounter = 24,
         AlternateMount = 25,
-        Max = 26,
+        Happiness = 27,
+        Happinnes = Happiness,
+        Max = 28,
 
         All = 127,          // default for class?
         MaxPerClass = 10
@@ -1052,7 +1054,7 @@ namespace Framework.Constants
         Constant = 6,
     }
 
-    public enum Difficulty : byte
+    public enum Difficulty : ushort // 1.60.1 Difficulty.db2 has IDs above 255 (256)
     {
         None = 0,
         Normal = 1,
@@ -1608,7 +1610,7 @@ namespace Framework.Constants
         CallscriptToUnit = 21,               // Source = Worldobject (If Present Used As A Search Center), Datalong = Script Id, Datalong2 = Unit Lowguid, Dataint = Script Table To Use (See Scriptstype)
         Kill = 22,               // Source/Target = Creature, Dataint = Remove Corpse Attribute
 
-        // Cyphercore Only
+        // Emuforever Only
         Orientation = 30,               // Source = Unit, Target (Datalong > 0) = Unit, Datalong = > 0 Turn Source To Face Target, O = Orientation
         Equip = 31,               // Soucre = Creature, Datalong = Equipment Id
         Model = 32,               // Source = Creature, Datalong = Model Id
@@ -2059,6 +2061,10 @@ namespace Framework.Constants
         NoResetTalentCost,
         /// <summary cref="int">int</summary>
         Numthreads,
+        /// <summary cref="TimeSpan">TimeSpan</summary>
+        MapUpdateBotBudget,
+        /// <summary cref="TimeSpan">TimeSpan</summary>
+        MapUpdateBotMaxStaleness,
         /// <summary cref="bool">bool</summary>
         OffhandCheckAtSpellUnlearn,
         /// <summary cref="Seconds">Seconds</summary>
@@ -2410,6 +2416,8 @@ namespace Framework.Constants
         WorldBossLevelDiff,
         /// <summary cref="uint">uint</summary>
         XpBoostDaymask,
+        /// <summary cref="bool">bool</summary>
+        ClassicSecuredBagSlotsForAll,
         Max
     }
 
@@ -3493,8 +3501,8 @@ namespace Framework.Constants
         SocketingPunchcardblueGemOnlyInPunchcardblueslot = 1075,
         SocketingRequiresDominationShard = 1076,
         SocketingDominationShardOnlyInDominationslot = 1077,
-        SocketingRequiresCypherGem = 1078,
-        SocketingCypherGemOnlyInCypherslot = 1079,
+        SocketingRequiresForeverGem = 1078,
+        SocketingForeverGemOnlyInForeverslot = 1079,
         SocketingRequiresTinkerGem = 1080,
         SocketingTinkerGemOnlyInTinkerslot = 1081,
         SocketingRequiresPrimordialGem = 1082,

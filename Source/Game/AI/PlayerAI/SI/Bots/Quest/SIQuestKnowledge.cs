@@ -50,7 +50,8 @@ namespace Game.AI
         readonly Dictionary<int, AreaTriggerRecord[]> _questTriggers = new();
         readonly Dictionary<Class, int[]> _classTrainers = new();
         readonly Dictionary<int, SISpawn[]> _creaturesByMap = new();
-        readonly int[] _vendors, _repairers;
+        readonly int[] _vendors, _repairers, _bankers, _auctioneers;
+        readonly int[] _mailboxCreatures, _mailboxObjects;
         readonly SIFlightMasterStop[] _flightMasters;
         readonly System.Collections.Concurrent.ConcurrentDictionary<int, SIQuestPlan> _plans = new();
         readonly object _planLock = new();
@@ -106,6 +107,8 @@ namespace Game.AI
             var trainers = new Dictionary<Class, List<int>>();
             var vendors = new List<int>();
             var repairers = new List<int>();
+            var bankers = new List<int>();
+            var auctioneers = new List<int>();
             var flightMasters = new List<SIFlightMasterStop>();
             var vendorItems = new Dictionary<int, List<int>>();
             foreach (CreatureTemplate template in Global.ObjectMgr.GetCreatureTemplates().Values)
@@ -135,6 +138,8 @@ namespace Game.AI
                     }
                 }
                 if (template.Npcflag.HasFlag(NPCFlags1.Repair)) repairers.Add(entry);
+                if (template.Npcflag.HasFlag(NPCFlags1.Banker)) bankers.Add(entry);
+                if (template.Npcflag.HasFlag(NPCFlags1.Auctioneer)) auctioneers.Add(entry);
                 if (template.Npcflag.HasFlag(NPCFlags1.Trainer) && template.TrainerClass != Class.None)
                 {
                     if (SITrainerCatalog.ForCreature(entry).Any())
@@ -147,6 +152,10 @@ namespace Game.AI
             foreach (var pair in vendorItems) _itemVendors[pair.Key] = pair.Value.Distinct().ToArray();
             _vendors = vendors.ToArray();
             _repairers = repairers.ToArray();
+            _bankers = bankers.ToArray();
+            _auctioneers = auctioneers.ToArray();
+            _mailboxCreatures = _creatureSpawns.Keys.Where(entry => Global.ObjectMgr.GetCreatureTemplate(entry).Npcflag.HasFlag(NPCFlags1.Mailbox)).ToArray();
+            _mailboxObjects = _objectSpawns.Keys.Where(entry => Global.ObjectMgr.GetGameObjectTemplate(entry)?.type == GameObjectTypes.Mailbox).ToArray();
             _flightMasters = flightMasters.ToArray();
 
             var objectItems = new Dictionary<int, List<int>>();
@@ -200,8 +209,13 @@ namespace Game.AI
         public int[] ClassTrainers(Class cls) => _classTrainers.GetValueOrDefault(cls, NoEntries);
         public int[] Vendors => _vendors;
         public int[] Repairers => _repairers;
+        public int[] Bankers => _bankers;
+        public int[] Auctioneers => _auctioneers;
+        public int[] MailboxCreatures => _mailboxCreatures;
+        public int[] MailboxObjects => _mailboxObjects;
         public IReadOnlyList<SIFlightMasterStop> FlightMasters => _flightMasters;
         public int[] VendorsSelling(int item) => _itemVendors.GetValueOrDefault(item, NoEntries);
+        public int[] CreaturesDropping(int item) => Droppers(item);
 
         public IEnumerable<SISpawn> Spawns(IEnumerable<int> creatures, IEnumerable<int> objects, int map) =>
             creatures.SelectMany(CreatureSpawns).Concat(objects.SelectMany(ObjectSpawns)).Where(spawn => spawn.Map == map);

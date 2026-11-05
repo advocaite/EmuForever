@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -15,7 +15,6 @@ namespace Game.BattleGrounds.Zones.EyeofStorm
     class BgEyeofStorm : Battleground
     {
         int[] m_HonorScoreTics = new int[SharedConst.PvpTeamsCount];
-        int m_FlagCapturedBgObjectType;                  // type that should be despawned when flag is captured
 
         TimeTracker _pointsTimer;
         int m_HonorTics;
@@ -32,7 +31,6 @@ namespace Game.BattleGrounds.Zones.EyeofStorm
         public BgEyeofStorm(BattlegroundTemplate battlegroundTemplate) : base(battlegroundTemplate)
         {
             m_HonorScoreTics = [0, 0];
-            m_FlagCapturedBgObjectType = 0;
             m_HonorTics = 0;
             _pointsTimer = new(Misc.PointsTickTime);
             _assaultEnabled = false;
@@ -402,7 +400,6 @@ namespace Game.BattleGrounds.Zones.EyeofStorm
             m_TeamScores[BattleGroundTeamId.Alliance] = 0;
             m_TeamScores[BattleGroundTeamId.Horde] = 0;
             m_HonorScoreTics = [0, 0];
-            m_FlagCapturedBgObjectType = 0;
             bool isBGWeekend = Global.BattlegroundMgr.IsBGWeekend(GetTypeID());
             m_HonorTics = isBGWeekend ? Misc.EYWeekendHonorTicks : Misc.NotEYWeekendHonorTicks;
         }

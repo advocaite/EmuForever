@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -112,7 +112,7 @@ namespace Game.Scripting
             protected EffectHook(int effIndex)
             {
                 // effect index must be in range <0;2>, allow use of special effindexes
-                Cypher.Assert(_effIndex == SpellConst.EffectAll || _effIndex == SpellConst.EffectFirstFound || _effIndex < SpellConst.MaxEffects);
+                Forever.Assert(_effIndex == SpellConst.EffectAll || _effIndex == SpellConst.EffectFirstFound || _effIndex < SpellConst.MaxEffects);
                 _effIndex = effIndex;
             }
 
@@ -1002,7 +1002,7 @@ namespace Game.Scripting
             if (hitUnit != null)
             {
                 var targetInfo = m_spell.m_UniqueTargetInfo.Find(targetInfo => targetInfo.TargetGUID == hitUnit.GetGUID());
-                Cypher.Assert(targetInfo != null);
+                Forever.Assert(targetInfo != null);
                 return targetInfo.IsCrit;
             }
 
@@ -1084,7 +1084,7 @@ namespace Game.Scripting
 
         public SpellEffectInfo GetEffectInfo()
         {
-            Cypher.Assert(IsInEffectHook(), 
+            Forever.Assert(IsInEffectHook(), 
                 $"Script: `{m_scriptName}` Spell: `{m_scriptSpellId}`: function SpellScript::GetEffectInfo was called, " +
                 $"but function has no effect in current hook!");
 
@@ -1260,6 +1260,7 @@ namespace Game.Scripting
         public delegate void AuraProcDelegate(ProcEventInfo info);
         public delegate void AuraEffectProcDelegate(AuraEffect aura, ProcEventInfo info);
         public delegate void AuraEnterLeaveCombatFnType(bool isNowInCombat);
+        public delegate void AuraHeartbeatFnType();
 
         public class CheckAreaTargetHandler
         {
@@ -1565,6 +1566,21 @@ namespace Game.Scripting
             public void Call(bool isNowInCombat)
             {
                 _callImpl(isNowInCombat);
+            }
+        }
+
+        public class HeartbeatHandler
+        {
+            AuraHeartbeatFnType _callImpl;
+
+            public HeartbeatHandler(AuraHeartbeatFnType callImpl)
+            {
+                _callImpl = callImpl;
+            }
+
+            public void Call()
+            {
+                _callImpl();
             }
         }
 
@@ -2046,6 +2062,12 @@ namespace Game.Scripting
         // example: OnEnterLeaveCombat += AuraEnterLeaveCombatFn(class::function)
         // where function is: void function (bool isNowInCombat);
         public List<EnterLeaveCombatHandler> OnEnterLeaveCombat = new();
+
+        // executed every unit heartbeat (5.2 sec, as TC) while the aura is applied; there is no current target application,
+        // use GetUnitOwner()
+        // example: OnHeartbeat += AuraHeartbeatFn(class::function)
+        // where function is: void function ();
+        public List<HeartbeatHandler> OnHeartbeat = new();
 
         // AuraScript interface - hook/effect execution manipulators
 

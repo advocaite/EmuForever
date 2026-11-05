@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  
+  <Import Project="..\..\default.props" />
+  
+  <PropertyGroup>
+	  <OutputType>Exe</OutputType>
+    <ApplicationIcon>Blue.ico</ApplicationIcon>
+    <StartupObject>ForeverWorld.Server</StartupObject>            
+    <!-- A busy realm allocates on map, network and navigation workers. Background
+         server GC prevents workstation collection from serializing that workload. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<ProjectReference Include="..\Game\Game.csproj" />
+	<ProjectReference Include="..\Scripts\Scripts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Configs/ForeverWorld.conf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  
+</Project>
+

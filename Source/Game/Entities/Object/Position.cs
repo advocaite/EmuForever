@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Game.DataStorage;
@@ -415,9 +415,7 @@ namespace Game.Entities
 
         public Cell GetCurrentCell()
         {
-            if (currentCell == null)
-                Log.outError(LogFilter.Server, "Calling currentCell  but its null");
-
+            // A location, or a corpse whose grid is not loaded, has no grid membership.
             return currentCell;
         }
         public void SetCurrentCell(Cell cell) { currentCell = cell; }

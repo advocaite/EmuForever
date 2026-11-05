@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Collections;
@@ -463,6 +463,7 @@ namespace Game.Entities
         public ProcFlagsInit ProcAttacker { get; set; }
         public ProcFlagsInit ProcVictim { get; set; }
         public int CleanDamage { get; set; }        // Used only for rage calculation
+        public int RageGained { get; set; }
         public MeleeHitOutcome HitOutCome { get; set; }  // TODO: remove this field (need use TargetState)
     }
 

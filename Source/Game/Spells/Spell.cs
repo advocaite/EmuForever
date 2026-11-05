@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -127,7 +127,7 @@ namespace Game.Spells
             }
 
             if (m_caster != null && m_caster.GetTypeId() == TypeId.Player)
-                Cypher.Assert(m_caster.ToPlayer().m_spellModTakingSpell != this);
+                Forever.Assert(m_caster.ToPlayer().m_spellModTakingSpell != this);
         }
 
         void InitExplicitTargets(SpellCastTargets targets)
@@ -146,7 +146,7 @@ namespace Game.Spells
                 // for unit case allow corpse target mask because player with not released corpse is a unit target
                 if ((target.ToUnit() != null && !neededTargets.HasAnyFlag(SpellCastTargetFlags.UnitMask | SpellCastTargetFlags.CorpseMask))
                     || (target.IsTypeId(TypeId.GameObject) && !neededTargets.HasFlag(SpellCastTargetFlags.GameobjectMask))
-                    || (target.IsTypeId(TypeId.Corpse) && !neededTargets.HasFlag(SpellCastTargetFlags.CorpseMask)))
+                    || (target.IsTypeId(TypeId.Corpse) && !neededTargets.HasAnyFlag(SpellCastTargetFlags.CorpseMask)))
                     m_targets.RemoveObjectTarget();
             }
             else
@@ -499,7 +499,7 @@ namespace Game.Spells
                                     m_targets.SetSrc(m_caster);
                                     break;
                                 default:
-                                    Cypher.Assert(false, 
+                                    Forever.Assert(false, 
                                         "Spell.SelectEffectImplicitTargets: " +
                                         "received not implemented select target reference Type " +
                                         "for TARGET_TYPE_OBJECT_SRC");
@@ -519,7 +519,7 @@ namespace Game.Spells
                                     SelectImplicitDestDestTargets(spellEffectInfo, targetType, targetIndex);
                                     break;
                                 default:
-                                    Cypher.Assert(false, 
+                                    Forever.Assert(false, 
                                         "Spell.SelectEffectImplicitTargets: " +
                                         "received not implemented select target reference Type " +
                                         "for TARGET_TYPE_OBJECT_DEST");
@@ -536,7 +536,7 @@ namespace Game.Spells
                                     SelectImplicitTargetObjectTargets(spellEffectInfo, targetType);
                                     break;
                                 default:
-                                    Cypher.Assert(false, 
+                                    Forever.Assert(false, 
                                         "Spell.SelectEffectImplicitTargets: " +
                                         "received not implemented select target reference Type " +
                                         "for TARGET_TYPE_OBJECT");
@@ -552,7 +552,7 @@ namespace Game.Spells
                         $"effect {spellEffectInfo.EffectIndex} is not implemented yet!");
                     break;
                 default:
-                    Cypher.Assert(false, 
+                    Forever.Assert(false, 
                         "Spell.SelectEffectImplicitTargets: " +
                         "received not implemented select target category");
                     break;
@@ -563,7 +563,7 @@ namespace Game.Spells
         {
             if (targetType.GetReferenceType() != SpellTargetReferenceTypes.Caster)
             {
-                Cypher.Assert(false, 
+                Forever.Assert(false, 
                     "Spell.SelectImplicitChannelTargets: " +
                     "received not implemented target reference Type");
                 return;
@@ -645,7 +645,7 @@ namespace Game.Spells
                     break;
                 }
                 default:
-                    Cypher.Assert(false, 
+                    Forever.Assert(false, 
                         "Spell.SelectImplicitChannelTargets: " +
                         "received not implemented target Type");
                     break;
@@ -656,7 +656,7 @@ namespace Game.Spells
         {
             if (targetType.GetReferenceType() != SpellTargetReferenceTypes.Caster)
             {
-                Cypher.Assert(false, 
+                Forever.Assert(false, 
                     "Spell.SelectImplicitNearbyTargets: " +
                     "received not implemented target reference Type");
                 return;
@@ -679,7 +679,7 @@ namespace Game.Spells
                     range = m_spellInfo.GetMaxRange(IsPositive(), m_caster, this);
                     break;
                 default:
-                    Cypher.Assert(false, 
+                    Forever.Assert(false, 
                         "Spell.SelectImplicitNearbyTargets: " +
                         "received not implemented selection check Type");
                     break;
@@ -865,7 +865,7 @@ namespace Game.Spells
                     m_targets.SetDst(dest);
                     break;
                 default:
-                    Cypher.Assert(false, 
+                    Forever.Assert(false, 
                         "Spell.SelectImplicitNearbyTargets: " +
                         "received not implemented target object Type");
                     break;
@@ -966,7 +966,7 @@ namespace Game.Spells
                     break;
                 }
                 default:
-                    Cypher.Assert(false, 
+                    Forever.Assert(false, 
                         "Spell.SelectImplicitAreaTargets: " +
                         "received not implemented target reference Type");
                     return;
@@ -990,7 +990,7 @@ namespace Game.Spells
                     center = referer.GetPosition();
                     break;
                 default:
-                    Cypher.Assert(false, 
+                    Forever.Assert(false, 
                         "Spell.SelectImplicitAreaTargets: " +
                         "received not implemented target reference Type");
                     return;
@@ -1625,7 +1625,7 @@ namespace Game.Spells
                     dst = m_targets.GetUnitTarget();
                     break;
                 default:
-                    Cypher.Assert(false, 
+                    Forever.Assert(false, 
                         "Spell.SelectImplicitLineTargets: " +
                         "received not implemented target reference Type");
                     return;
@@ -3965,7 +3965,7 @@ namespace Game.Spells
                 }
                 case SpellCastResult.CantUntalent:
                 {
-                    Cypher.Assert(param1.HasValue);
+                    Forever.Assert(param1.HasValue);
                     packet.FailedArg1 = (int)param1;
                     break;
                 }
@@ -4048,12 +4048,26 @@ namespace Game.Spells
             caster.SendPacket(packet);
         }
 
+        SpellCastFlags CastOriginFlags()
+        {
+            SpellCastFlags flags=SpellCastFlags.None;
+            bool triggered=IsTriggered();
+            // SI supplies player input on the server. Its ordinary mounts,
+            // recipes and other actions need the same client presentation as
+            // a player request, without pretending a client request arrived.
+            if(m_fromClient||(m_caster.ToPlayer()?.Controller!=null&&!triggered&&m_triggeredByAuraSpell==null))
+                flags|=SpellCastFlags.FromClient;
+            if(((triggered&&!m_spellInfo.IsAutoRepeatRangedSpell())||m_triggeredByAuraSpell!=null)&&!m_fromClient)
+                flags|=SpellCastFlags.Pending;
+            return flags;
+        }
+
         void SendSpellStart()
         {
             if (!IsNeedSendToClient())
                 return;
 
-            SpellCastFlags castFlags = SpellCastFlags.HasTrajectory;
+            SpellCastFlags castFlags = SpellCastFlags.HasTrajectory | CastOriginFlags();
             uint schoolImmunityMask = 0;
             ulong mechanicImmunityMask = 0;
             Unit unitCaster = m_caster.ToUnit();
@@ -4066,17 +4080,11 @@ namespace Game.Spells
             if (schoolImmunityMask != 0 || mechanicImmunityMask != 0)
                 castFlags |= SpellCastFlags.Immunity;
 
-            if (((IsTriggered() && !m_spellInfo.IsAutoRepeatRangedSpell()) || m_triggeredByAuraSpell != null) && !m_fromClient)
-                castFlags |= SpellCastFlags.Pending;
-
             if (m_spellInfo.HasAttribute(SpellAttr0.UsesRangedSlot) || m_spellInfo.HasAttribute(SpellAttr10.UsesRangedSlotCosmeticOnly) || m_spellInfo.HasAttribute(SpellCustomAttributes.NeedsAmmoData))
                 castFlags |= SpellCastFlags.Projectile;
 
             if ((m_caster.IsTypeId(TypeId.Player) || (m_caster.IsTypeId(TypeId.Unit) && m_caster.ToCreature().IsPet())) && m_powerCost.Any(cost => cost.Power != PowerType.Health))
                 castFlags |= SpellCastFlags.PowerLeftSelf;
-
-            if (HasPowerTypeCost(PowerType.RuneBlood) || HasPowerTypeCost(PowerType.RuneUnholy)|| HasPowerTypeCost(PowerType.RuneFrost))
-                castFlags |= SpellCastFlags.NoGCD; // not needed, but Blizzard sends it
 
             if (m_spellInfo.HasAttribute(SpellAttr8.HealPrediction) && m_casttime != 0 && m_caster.IsUnit())
                 castFlags |= SpellCastFlags.HealPrediction;
@@ -4169,11 +4177,7 @@ namespace Game.Spells
 
             Log.outDebug(LogFilter.Spells, $"Sending SMSG_SPELL_GO id={m_spellInfo.Id}");
 
-            SpellCastFlags castFlags = SpellCastFlags.Unk9;
-
-            // triggered spells with spell visual != 0
-            if (((IsTriggered() && !m_spellInfo.IsAutoRepeatRangedSpell()) || m_triggeredByAuraSpell != null) && !m_fromClient)
-                castFlags |= SpellCastFlags.Pending;
+            SpellCastFlags castFlags = SpellCastFlags.Unk9 | CastOriginFlags();
 
             if (m_spellInfo.HasAttribute(SpellAttr0.UsesRangedSlot)
                 || m_spellInfo.HasAttribute(SpellAttr10.UsesRangedSlotCosmeticOnly)
@@ -4193,7 +4197,6 @@ namespace Game.Spells
                 && (HasPowerTypeCost(PowerType.RuneBlood) || HasPowerTypeCost(PowerType.RuneUnholy) || HasPowerTypeCost(PowerType.RuneFrost))
                 && !_triggeredCastFlags.HasAnyFlag(TriggerCastFlags.IgnorePowerAndReagentCost))
             {
-                castFlags |= SpellCastFlags.NoGCD;                   // same as in SMSG_SPELL_START
                 castFlags |= SpellCastFlags.RuneList;                    // rune cooldowns list
             }
 
@@ -4202,9 +4205,6 @@ namespace Game.Spells
 
             if (m_targets.HasTraj())
                 castFlags |= SpellCastFlags.AdjustMissile;
-
-            if (m_spellInfo.StartRecoveryTime == 0)
-                castFlags |= SpellCastFlags.NoGCD;
 
             SpellGo packet = new();
             SpellCastData castData = packet.Cast;
@@ -4321,18 +4321,23 @@ namespace Game.Spells
                     if (itemInventoryType == InventoryType.Thrown)
                     {
                         ammoDisplayID = pItem.GetDisplayId(playerCaster);
+                        if (ammoDisplayID.GetValueOrDefault() <= 0 || ammoDisplayID >= 500000)
+                            ammoDisplayID = 23211;
                         ammoInventoryType = itemInventoryType;
                     }
                     else
                     {
-                        int ammoID = playerCaster.m_activePlayerData.AmmoID;
+                        int ammoID = playerCaster.GetUsedAmmoId();
                         if (ammoID > 0)
                         {
                             ItemTemplate pProto = Global.ObjectMgr.GetItemTemplate(ammoID);
                             if (pProto != null)
                             {
-                                ammoDisplayID = pProto.GetDisplayInfoID();
-                                ammoInventoryType = pProto.GetInventoryType();
+                                ammoDisplayID = Player.GetAmmoDisplayId(pProto);
+                                // Classic's generic ammo appearance has no drawable model.
+                                if (!Player.HasDrawableAmmoDisplay(pProto))
+                                    ammoDisplayID = 23211;
+                                ammoInventoryType = InventoryType.Ammo;
                             }
                         }
                         else if (playerCaster.HasAura(46699))      // Requires No Ammo, used by Thori'dal, the Stars' Fury [item:34334]
@@ -4898,8 +4903,12 @@ namespace Game.Spells
 
                 unitCaster.ModifyPower(cost.Power, -cost.Amount);
 
-                if (cost.Power == PowerType.Mana)
+                // Classic 1.60 (vanilla): paying mana starts the five second rule (Player.Regenerate) (TC-forever)
+                if (cost.Power == PowerType.Mana && cost.Amount > 0)
+                {
                     unitCaster.SetLastManaUse(LoopTime.ServerTime);
+                    unitCaster.ToPlayer()?.InterruptPowerRegen(PowerType.Mana);
+                }
 
             }
         }
@@ -5996,6 +6005,10 @@ namespace Game.Spells
                         Player playerCaster = m_caster.ToPlayer();
                         if (playerCaster == null)
                             return SpellCastResult.TargetNotPlayer;
+
+                        // Classic 1.60 dual spec: the target spec group must exist (secondary is bought from a class trainer)
+                        if ((m_spellInfo.Id == 63644 || m_spellInfo.Id == 63645) && playerCaster.GetClassicSpecGroupConfig(m_spellInfo.Id == 63644) == null)
+                            return SpellCastResult.NoSpec;
 
                         // can't change during already started arena/Battleground
                         Battleground bg = player.GetBattleground();
@@ -8160,7 +8173,7 @@ namespace Game.Spells
                         hookType = SpellScriptHookType.EffectHitTarget;
                         break;
                     default:
-                        Cypher.Assert(false);
+                        Forever.Assert(false);
                         return false;
                 }
 
@@ -8342,6 +8355,11 @@ namespace Game.Spells
             if (target.IsCreature() && target.ToCreature().CanIgnoreLineOfSightWhenCastingOnMe())
                 return true;
 
+            // CheckCast runs both when preparation begins and just before launch.
+            // An SI target may enter terrain cover between controller updates.
+            if (!IsTriggered() && source == m_caster && source.ToPlayer()?.Controller is { } controller && target.ToUnit() is { } unitTarget)
+                return controller.CombatSight(unitTarget);
+
             WorldObject src = targetAsSourceLocation ? target : source;
             WorldObject dst = targetAsSourceLocation ? source : target;
             return src.IsWithinLOSInMap(dst, LineOfSightChecks.All, ignoreFlags);
@@ -8478,26 +8496,9 @@ namespace Game.Spells
                 Player modOwner = m_caster.GetSpellModOwner();
                 if (modOwner != null)
                     modOwner.ApplySpellMod(m_spellInfo, SpellModOp.StartCooldown, ref gcd, this);
-                    
 
-                bool isMeleeOrRangedSpell = 
-                    m_spellInfo.DmgClass == SpellDmgClass.Melee 
-                    || m_spellInfo.DmgClass == SpellDmgClass.Ranged 
-                    || m_spellInfo.HasAttribute(SpellAttr0.UsesRangedSlot) 
-                    || m_spellInfo.HasAttribute(SpellAttr0.IsAbility);
-
-                // Apply haste rating
-                if (gcd > MinGCD && (m_spellInfo.StartRecoveryCategory == 133 && !isMeleeOrRangedSpell))
-                {
-                    gcd = (Milliseconds)(gcd * m_caster.ToUnit().m_unitData.ModSpellHaste);                    
-                    MathFunctions.RoundToInterval(ref gcd.Ticks, 750, 1500);                    
-                }
-
-                if (gcd > MinGCD && m_caster.ToUnit().HasAuraTypeWithAffectMask(AuraType.ModGlobalCooldownByHasteRegen, m_spellInfo))
-                {
-                    gcd = (Milliseconds)(gcd * m_caster.ToUnit().m_unitData.ModHasteRegen);
-                    MathFunctions.RoundToInterval(ref gcd.Ticks, 750, 1500);                   
-                }
+                // Classic 1.60 (vanilla): the global cooldown is not shortened by spell haste or haste regen (retail scaled it down to
+                // 0.75 s) (TC-forever)
             }
 
             m_caster.ToUnit().GetSpellHistory().AddGlobalCooldown(m_spellInfo, gcd);
@@ -8614,7 +8615,10 @@ namespace Game.Spells
             m_timer = m_casttime > 0 ? m_casttime : Milliseconds.Zero;
         }
 
-        public bool IsTriggered() { return _triggeredCastFlags.HasAnyFlag(TriggerCastFlags.FullMask); }
+        public bool IsTriggered()
+        {
+            return (!m_fromClient&&_triggeredCastFlags.HasAnyFlag(TriggerCastFlags.IsTriggeredMask))||!m_originalCastId.IsEmpty();
+        }
         public bool IsTriggeredByAura(SpellInfo auraSpellInfo) { return (auraSpellInfo == m_triggeredByAuraSpell); }
         public bool IsIgnoringCooldowns() { return _triggeredCastFlags.HasAnyFlag(TriggerCastFlags.IgnoreSpellAndCategoryCD); }
         
@@ -9877,9 +9881,9 @@ namespace Game.Spells
                         // handle effects on caster if the spell has travel time but also affects the caster in some way
                         TimeSpan n_offset = m_Spell.HandleDelayed(default);
                         if (m_Spell.m_spellInfo.LaunchDelay != 0)
-                            Cypher.Assert(n_offset == m_Spell.m_spellInfo.LaunchDelay);
+                            Forever.Assert(n_offset == m_Spell.m_spellInfo.LaunchDelay);
                         else
-                            Cypher.Assert(n_offset == m_Spell.GetDelayMoment(), $"{n_offset} == {m_Spell.GetDelayMoment()}");
+                            Forever.Assert(n_offset == m_Spell.GetDelayMoment(), $"{n_offset} == {m_Spell.GetDelayMoment()}");
 
                         // re-plan the event for the delay moment
                         m_Spell.GetCaster().m_Events.AddEvent(this, e_time + n_offset, false);

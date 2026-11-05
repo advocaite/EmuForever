@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -310,16 +310,18 @@ namespace Game.Networking.Packets
         // Forever layout: TC GuildEventPresenceChange::Write (Classic 1.60: surname, no Mobile bit)
         public override void Write()
         {
-            string surname = Global.CharacterCacheStorage.GetCharacterSurnameByGuid(Guid) ?? string.Empty;
+            var identity = Global.CharacterCacheStorage.GetCharacterCacheByGuid(Guid);
+            string firstName = identity?.FirstName ?? Name;
+            string surname = identity?.Surname ?? string.Empty;
             _worldPacket.WritePackedGuid(Guid);
             _worldPacket.WriteUInt32(VirtualRealmAddress);
 
-            _worldPacket.WriteBits(Name.GetByteCount(), 6);
+            _worldPacket.WriteBits(firstName.GetByteCount(), 6);
             _worldPacket.WriteBits(surname.GetByteCount(), 9);
             _worldPacket.WriteBit(LoggedOn);
             _worldPacket.FlushBits();
 
-            _worldPacket.WriteString(Name);
+            _worldPacket.WriteString(firstName);
             _worldPacket.WriteString(surname);
         }
 
@@ -352,15 +354,17 @@ namespace Game.Networking.Packets
         // Forever layout: TC GuildEventPlayerJoined::Write (Classic 1.60: surname)
         public override void Write()
         {
-            string surname = Global.CharacterCacheStorage.GetCharacterSurnameByGuid(Guid) ?? string.Empty;
+            var identity = Global.CharacterCacheStorage.GetCharacterCacheByGuid(Guid);
+            string firstName = identity?.FirstName ?? Name;
+            string surname = identity?.Surname ?? string.Empty;
             _worldPacket.WritePackedGuid(Guid);
             _worldPacket.WriteUInt32(VirtualRealmAddress);
 
-            _worldPacket.WriteBits(Name.GetByteCount(), 6);
+            _worldPacket.WriteBits(firstName.GetByteCount(), 6);
             _worldPacket.WriteBits(surname.GetByteCount(), 9);
             _worldPacket.FlushBits();
 
-            _worldPacket.WriteString(Name);
+            _worldPacket.WriteString(firstName);
             _worldPacket.WriteString(surname);
         }
 
@@ -1586,18 +1590,21 @@ namespace Game.Networking.Packets
             DungeonScore.Write(data);
             data.WriteUInt64(GuildClubMemberID);
             data.WriteUInt8(RaceID);
+            data.WriteUInt64(0); // Classic 1.60.1.70291+: extra member field before the season and name lengths.
             data.WriteInt32(TimerunningSeasonID);
 
             // Classic 1.60: the surname (9 bit length) follows the name
-            string surname = Global.CharacterCacheStorage.GetCharacterSurnameByGuid(Guid) ?? string.Empty;
-            data.WriteBits(Name.GetByteCount(), 6);
+            var identity = Global.CharacterCacheStorage.GetCharacterCacheByGuid(Guid);
+            string firstName = identity?.FirstName ?? Name;
+            string surname = identity?.Surname ?? string.Empty;
+            data.WriteBits(firstName.GetByteCount(), 6);
             data.WriteBits(surname.GetByteCount(), 9);
             data.WriteBits(Note.GetByteCount(), 8);
             data.WriteBits(OfficerNote.GetByteCount(), 8);
             data.WriteBit(Authenticated);
             data.FlushBits();
 
-            data.WriteString(Name);
+            data.WriteString(firstName);
             data.WriteString(surname);
             data.WriteString(Note);
             data.WriteString(OfficerNote);

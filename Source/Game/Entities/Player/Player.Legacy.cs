@@ -14,7 +14,7 @@ namespace Game.Entities
     {
         // Classic 1.60: the Legacy system (micro menu "Legacy", LegacyMicroButtonMixin:IsLegacySystemUnlocked) opens with renown level 1
         // of the Legacy reward track faction 2802; renown level = quantity of its renown currency 3485. The client says it unlocks at
-        // level 25. Port of the reference Player::UpdateClassicLegacyUnlock (E:\trinitycore_new Player.cpp).
+        // level 25. Port of the reference Player::UpdateClassicLegacyUnlock (E:\emuforever_new Player.cpp).
         const int LegacyRenownCurrencyID = LegacyManager.RenownCurrencyId;
         const int LegacyRewardTrackFactionID = LegacyManager.RewardFactionId;
         const int LegacyTraitSystemID = LegacyManager.TraitSystemId;
@@ -93,6 +93,23 @@ namespace Game.Entities
 
         public int GetLegacyPoints() => LegacyProgress?.Points ?? LegacyManager.EarnedPoints(GetCompletedAchievementIds());
 
+        // A renown level is the quantity of the track's renown currency. Criteria 261 names that currency as its asset
+        // (Legacy PvP rank challenges: 3473 "Renown - PvP Rank" of faction 2800; Legacy's own track is 2802 -> 3485).
+        public int GetRenownLevel(int renownCurrencyId) =>
+            RenownCurrencies.Value.Contains(renownCurrencyId) ? GetCurrencyQuantity(renownCurrencyId) : 0;
+
+        static readonly Lazy<HashSet<int>> RenownCurrencies = new(() => CliDB.FactionStorage.Values
+            .Where(faction => faction.RenownCurrencyID != 0).Select(faction => faction.RenownCurrencyID).ToHashSet());
+
+        // Renown criteria (Legacy PvP rank challenges) and the PvP rank fields follow every change of a renown currency.
+        void UpdateRenownCriteria(int currencyId)
+        {
+            if (!RenownCurrencies.Value.Contains(currencyId)) return;
+            UpdateCriteria(CriteriaType.ReachRenownLevel, currencyId);
+            if (currencyId == Game.Systems.PvP.ForeverPvpRanks.RankCurrencyId)
+                UpdatePvpRankFields();
+        }
+
         bool _legacyCommitPending;
         public bool CommitLegacyTraits(TraitConfigPacket state)
         {
@@ -141,7 +158,8 @@ namespace Game.Entities
             int rank = 0;
             foreach (TraitConfig config in m_activePlayerData.TraitConfigs)
             {
-                if ((TraitConfigType)(int)config.Type == TraitConfigType.Combat && config.ID != m_activePlayerData.ActiveCombatTraitConfigID) continue;
+                if ((TraitConfigType)(int)config.Type == TraitConfigType.Combat
+                    && config.ID.GetValue() != m_activePlayerData.ActiveCombatTraitConfigID.GetValue()) continue;
                 foreach (TraitEntry entry in config.Entries)
                     if (CliDB.TraitNodeEntryStorage.LookupByKey(entry.TraitNodeEntryID)?.TraitDefinitionID == definitionId)
                         rank = Math.Max(rank, entry.Rank + entry.GrantedRanks);

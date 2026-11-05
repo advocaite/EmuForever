@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -11,6 +11,7 @@ using System;
 using System.Linq;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Threading.Tasks;
 
 namespace Game.Networking
 {
@@ -279,7 +280,9 @@ namespace Game.Networking
 
             PacketLog.Write(packet.GetData(), packet.GetOpcode(), GetRemoteIpAddress(), _connectType, true);
 
-            packet.SetOpcode(ClassicOpcodeMap.ToCore(packet.GetOpcode()));
+            uint wireOpcode = packet.GetOpcode();
+            uint clientBuild = Global.WorldMgr.GetRealm().Build;
+            packet.SetOpcode(ClassicOpcodeMap.ToCore(wireOpcode, clientBuild));
             ClientOpcodes opcode = (ClientOpcodes)packet.GetOpcode();
 
             if (opcode != ClientOpcodes.HotfixRequest && !header.IsValidSize())
@@ -364,7 +367,9 @@ namespace Game.Networking
                         if (!PacketManager.ContainsHandler(opcode))
                         {
                             Log.outError(LogFilter.Network, 
-                                $"No defined handler for opcode {opcode} sent by {_worldSession.GetPlayerInfo()}");
+                                $"No defined handler for opcode {opcode} " +
+                                $"(wire 0x{wireOpcode:X8}, core 0x{packet.GetOpcode():X8}, build {clientBuild}, bytes {packet.GetData().Length - 4}) " +
+                                $"sent by {_worldSession.GetPlayerInfo()}");
                             break;
                         }
 
@@ -392,7 +397,8 @@ namespace Game.Networking
             packet.WritePacketData();
 
             var data = packet.GetData();
-            ServerOpcodes opcode = (ServerOpcodes)ClassicOpcodeMap.ToClient((uint)packet.GetOpcode());
+            uint clientBuild = Global.WorldMgr.GetRealm().Build;
+            ServerOpcodes opcode = (ServerOpcodes)ClassicOpcodeMap.ToClient((uint)packet.GetOpcode(), clientBuild);
             PacketLog.Write(data, (uint)opcode, GetRemoteIpAddress(), _connectType, false);
 
             ByteBuffer buffer = new();
@@ -409,7 +415,7 @@ namespace Game.Networking
                 buffer.WriteBytes(compressedData, (int)compressedSize);
 
                 packetSize = (int)(compressedSize + 12);
-                opcode = (ServerOpcodes)ClassicOpcodeMap.ToClient((uint)ServerOpcodes.CompressedPacket);
+                opcode = (ServerOpcodes)ClassicOpcodeMap.ToClient((uint)ServerOpcodes.CompressedPacket, clientBuild);
 
                 data = buffer.GetData();
             }
@@ -685,10 +691,12 @@ namespace Game.Networking
             AsyncRead();
         }
 
-        void LoadSessionPermissionsCallback(SQLResult result)
+        async void LoadSessionPermissionsCallback(SQLResult result)
         {
             // RBAC must be loaded before adding session to check for skip queue permission
             _worldSession.GetRBACData().LoadFromDBCallback(result);
+
+            await Task.Delay(2500); // I assume everything happens faster than emuforever so we move up to 2.5sec to allow launcher to finish. This is a hack fix and launcher should inform server when client is patched fully.
 
             SendPacket(new EnterEncryptedMode(_encryptKey, true));
         }

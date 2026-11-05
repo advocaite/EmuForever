@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -456,6 +456,11 @@ namespace Game.Loots
 
                 // possible cases
                 if (!spellInfo.IsLootCrafting())
+                    continue;
+
+                // 1.60.1: 1325180 is the "create loot" spell of item 287045, which nothing in the world sells, drops or rewards;
+                // no 1.60 source has its loot
+                if (spellInfo.Id == 1325180)
                     continue;
 
                 if (!lootIdSet.Contains(spellInfo.Id))

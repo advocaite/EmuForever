@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Collections;
@@ -18,13 +18,14 @@ using Game.Scripting;
 using Game.Spells;
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
 namespace Game
 {
-    public sealed class ObjectManager : Singleton<ObjectManager>
+    public sealed partial class ObjectManager : Singleton<ObjectManager>
     {
         ObjectManager() { }
 
@@ -34,17 +35,9 @@ namespace Game
             if (name.IsEmpty())
                 return false;
 
-            //CultureInfo cultureInfo = Thread.CurrentThread.CurrentCulture;
-            //TextInfo textInfo = cultureInfo.TextInfo;
-
-            //str = textInfo.ToTitleCase(str);
-
-            name = name.ToLower();
-
-            var charArray = name.ToCharArray();
-            charArray[0] = char.ToUpper(charArray[0]);
-
-            name = new string(charArray);
+            name=string.Join(" ",name.Split((char[])null,StringSplitOptions.RemoveEmptyEntries)
+                .Select(part=>char.ToUpperInvariant(part[0])+part[1..].ToLowerInvariant()));
+            if(name.Length==0)return false;
             return true;
         }
 
@@ -279,15 +272,15 @@ namespace Game
         }
 
         //General
-        public bool LoadCypherStrings()
+        public bool LoadForeverStrings()
         {
             RelativeTime oldMSTime = Time.NowRelative;
-            CypherStringStorage.Clear();
+            ForeverStringStorage.Clear();
 
             SQLResult result = DB.World.Query("SELECT entry, content_default, content_loc1, content_loc2, content_loc3, content_loc4, content_loc5, content_loc6, content_loc7, content_loc8 FROM trinity_string");
             if (result.IsEmpty())
             {
-                Log.outInfo(LogFilter.ServerLoading, "Loaded 0 CypherStrings. DB table `trinity_string` is empty.");
+                Log.outInfo(LogFilter.ServerLoading, "Loaded 0 ForeverStrings. DB table `trinity_string` is empty.");
                 return false;
             }
             uint count = 0;
@@ -295,15 +288,15 @@ namespace Game
             {
                 uint entry = result.Read<uint>(0);
 
-                CypherStringStorage[entry] = new StringArray((int)SharedConst.DefaultLocale + 1);
+                ForeverStringStorage[entry] = new StringArray((int)SharedConst.DefaultLocale + 1);
                 count++;
 
                 for (var i = SharedConst.DefaultLocale; i >= 0; --i)
-                    AddLocaleString(result.Read<string>((int)i + 1).ConvertFormatSyntax(), i, CypherStringStorage[entry]);
+                    AddLocaleString(result.Read<string>((int)i + 1).ConvertFormatSyntax(), i, ForeverStringStorage[entry]);
             }
             while (result.NextRow());
 
-            Log.outInfo(LogFilter.ServerLoading, $"Loaded {count} CypherStrings in {Time.Diff(oldMSTime)} ms.");
+            Log.outInfo(LogFilter.ServerLoading, $"Loaded {count} ForeverStrings in {Time.Diff(oldMSTime)} ms.");
             return true;
         }
 
@@ -472,24 +465,24 @@ namespace Game
             }
         }       
 
-        public string GetCypherString(uint entry, Locale locale = Locale.enUS)
+        public string GetForeverString(uint entry, Locale locale = Locale.enUS)
         {
-            if (!CypherStringStorage.ContainsKey(entry))
+            if (!ForeverStringStorage.ContainsKey(entry))
             {
-                Log.outError(LogFilter.Sql, $"Cypher string entry {entry} not found in DB.");
+                Log.outError(LogFilter.Sql, $"Forever string entry {entry} not found in DB.");
                 return "<Error>";
             }
 
-            var cs = CypherStringStorage[entry];
+            var cs = ForeverStringStorage[entry];
             if (cs.Length > (int)locale && !string.IsNullOrEmpty(cs[(int)locale]))
                 return cs[(int)locale];
 
             return cs[(int)SharedConst.DefaultLocale];
         }
 
-        public string GetCypherString(CypherStrings cmd, Locale locale = Locale.enUS)
+        public string GetForeverString(ForeverStrings cmd, Locale locale = Locale.enUS)
         {
-            return GetCypherString((uint)cmd, locale);
+            return GetForeverString((uint)cmd, locale);
         }
 
         public Dictionary<Race, RaceUnlockRequirement> GetRaceUnlockRequirements() 
@@ -870,6 +863,7 @@ namespace Game
             RelativeTime oldMSTime = Time.NowRelative;
 
             GraveyardStorage.Clear();                                  // need for reload case
+            _missingGraveyardLinks.Clear();
 
             //                                         0       1         2
             SQLResult result = DB.World.Query("SELECT ID, GhostZone, 0 FROM graveyard_zone"); // no faction column in the 1.60.1 world DB
@@ -973,27 +967,38 @@ namespace Game
             if (zoneId == 0)
             {
                 if (pos.Z > -500)
-                {
                     Log.outError(LogFilter.Server, 
                         $"ZoneId not found for map {MapId} coords ({pos.X}, {pos.Y}, {pos.Z}).");
-                    return GetDefaultGraveyard(team);
-                }
+                return GetDefaultGraveyard(team);
             }
 
-            var graveyard = GetClosestGraveyardInZone(location, team, conditionObject, zoneId);
-            var zoneEntry = CliDB.AreaTableStorage.LookupByKey(zoneId);
-            var parentEntry = CliDB.AreaTableStorage.LookupByKey(zoneEntry.ParentAreaID);
+            return GetClosestGraveyardForZone(location, team, conditionObject, zoneId);
+        }
 
-            while (graveyard == null && parentEntry != null)
+        readonly ConcurrentDictionary<(int Map, int Zone, Team Team), byte> _missingGraveyardLinks = new();
+
+        WorldSafeLocsEntry GetClosestGraveyardForZone(WorldLocation location, Team team, WorldObject conditionObject, int zoneId)
+        {
+            // A child area may intentionally inherit its parent's graveyard links.
+            // Only use the faction fallback after exhausting that chain.
+            var visited = new HashSet<int>();
+            for (int areaId = zoneId; areaId != 0 && visited.Add(areaId);)
             {
-                graveyard = GetClosestGraveyardInZone(location, team, conditionObject, parentEntry.Id);
-                if (graveyard == null && parentEntry.ParentAreaID != 0)
-                    parentEntry = CliDB.AreaTableStorage.LookupByKey(parentEntry.ParentAreaID);
-                else // nothing found, cant look further, give up.
-                    parentEntry = null;
+                var graveyard = GetClosestGraveyardInZone(location, team, conditionObject, areaId);
+                if (graveyard != null)
+                    return graveyard;
+
+                areaId = CliDB.AreaTableStorage.LookupByKey(areaId)?.ParentAreaID ?? 0;
             }
 
-            return graveyard;
+            if (CliDB.MapStorage.LookupByKey(location.GetMapId())?.IsBattlegroundOrArena == true)
+                return null;
+
+            if (zoneId != 0 && _missingGraveyardLinks.TryAdd((location.GetMapId(), zoneId, team), 0))
+                Log.outError(LogFilter.Sql,
+                    $"Table `graveyard_zone` incomplete: Zone {zoneId} Team {team} has no usable linked graveyard in its area or parent areas; using the faction default.");
+
+            return GetDefaultGraveyard(team);
         }
 
         WorldSafeLocsEntry GetClosestGraveyardInZone(WorldLocation location, Team team, WorldObject conditionObject, int zoneId)
@@ -1012,17 +1017,8 @@ namespace Game
 
             ConditionSourceInfo conditionSource = new(conditionObject);
 
-            // not need to check validity of map object; MapId _MUST_ be valid here
-            if (range.Empty() && !mapEntry.IsBattlegroundOrArena)
-            {
-                if (zoneId != 0) // zone == 0 can't be fixed, used by bliz for bugged zones
-                {
-                    Log.outError(LogFilter.Sql,
-                        $"Table `game_graveyard_zone` incomplete: " +
-                        $"Zone {zoneId} Team {team} does not have a linked graveyard.");
-                }
-                return GetDefaultGraveyard(team);
-            }
+            if (range.Empty() || mapEntry == null)
+                return null;
 
             // at corpse map
             bool foundNear = false;
@@ -1031,7 +1027,7 @@ namespace Game
 
             // at entrance map for corpse map
             bool foundEntr = false;
-            //float distEntr = 10000;
+            float distEntr = float.MaxValue;
             WorldSafeLocsEntry entryEntr = null;
 
             // some where other
@@ -1043,7 +1039,7 @@ namespace Game
                 if (entry == null)
                 {
                     Log.outError(LogFilter.Sql, 
-                        $"Table `game_graveyard_zone` has record " +
+                        $"Table `graveyard_zone` has record " +
                         $"for not existing graveyard (WorldSafeLocs.dbc id) {data.SafeLocId}, skipped.");
                     continue;
                 }
@@ -1100,15 +1096,10 @@ namespace Game
                     //And we don't care about the value itself, we compare the results
                     float dist2 = Vector2.DistanceSquared(entryLocPosition, mapCorpsePosition);
 
-                    if (foundEntr)
-                    {
-                        //distEntr = 0.0f;
-                        entryEntr = entry;
-                    }
-                    else
+                    if (!foundEntr || dist2 < distEntr)
                     {
                         foundEntr = true;
-                        //distEntr = 0.0f;
+                        distEntr = dist2;
                         entryEntr = entry;
                     }
                 }
@@ -2185,6 +2176,11 @@ namespace Game
 
             Log.outInfo(LogFilter.ServerLoading, 
                 $"Loaded {count} creature template gossip menus in {Time.Diff(oldMSTime)} ms.");
+
+            // Creature templates are checked before these associations load. Check the menu flag only after assignment.
+            foreach (var creatureTemplate in creatureTemplateStorage.Values)
+                if (!creatureTemplate.GossipMenuIds.Empty() && !creatureTemplate.Npcflag.HasFlag(NPCFlags1.Gossip))
+                    Log.outInfo(LogFilter.Sql, $"Creature (Entry: {creatureTemplate.Entry}) has assigned gossip menu, but npcflag does not include UNIT_NPC_FLAG_GOSSIP.");
         }
 
         void LoadCreatureTemplateResistances()
@@ -3409,18 +3405,6 @@ namespace Game
                 cInfo.UnitFlags3 &= UnitFlags3.Allowed;
             }
 
-            if (!cInfo.GossipMenuIds.Empty() && !cInfo.Npcflag.HasFlag(NPCFlags1.Gossip))
-            {
-                Log.outInfo(LogFilter.Sql,
-                    $"Creature (Entry: {cInfo.Entry}) has assigned gossip menu, " +
-                    $"but npcflag does not include UNIT_NPC_FLAG_GOSSIP.");
-            }
-            else if (cInfo.GossipMenuIds.Empty() && cInfo.Npcflag.HasFlag(NPCFlags1.Gossip))
-            {
-                Log.outInfo(LogFilter.Sql, 
-                    $"Creature (Entry: {cInfo.Entry}) has npcflag UNIT_NPC_FLAG_GOSSIP, " +
-                    $"but gossip menu is unassigned.");
-            }
         }
 
         void CheckCreatureMovement(string table, long id, CreatureMovementData creatureMovement)
@@ -4532,7 +4516,7 @@ namespace Game
                 return false;
 
             CreatureData master = GetCreatureData(guidLow);
-            Cypher.Assert(master != null);
+            Forever.Assert(master != null);
             ObjectGuid guid = ObjectGuid.Create(HighGuid.Creature, master.MapId, master.Id, guidLow);
             PreparedStatement stmt;
 
@@ -6083,7 +6067,7 @@ namespace Game
             if (cInfo == null)
             {
                 if (player != null)
-                    player.SendSysMessage(CypherStrings.CommandVendorselection);
+                    player.SendSysMessage(ForeverStrings.CommandVendorselection);
                 else
                 {
                     Log.outError(LogFilter.Sql,
@@ -6098,7 +6082,7 @@ namespace Game
                 if (skipvendors == null || skipvendors.Count == 0)
                 {
                     if (player != null)
-                        player.SendSysMessage(CypherStrings.CommandVendorselection);
+                        player.SendSysMessage(ForeverStrings.CommandVendorselection);
                     else
                     {
                         Log.outError(LogFilter.Sql,
@@ -6117,7 +6101,7 @@ namespace Game
                 (vItem.Type == ItemVendorType.Currency && CliDB.CurrencyTypesStorage.LookupByKey(vItem.item) == null))
             {
                 if (player != null)
-                    player.SendSysMessage(CypherStrings.ItemNotFound, vItem.item, vItem.Type);
+                    player.SendSysMessage(ForeverStrings.ItemNotFound, vItem.item, vItem.Type);
                 else
                 {
                     Log.outError(LogFilter.Sql,
@@ -6140,7 +6124,7 @@ namespace Game
             if (vItem.ExtendedCost != 0 && !CliDB.ItemExtendedCostStorage.ContainsKey(vItem.ExtendedCost))
             {
                 if (player != null)
-                    player.SendSysMessage(CypherStrings.ExtendedCostNotExist, vItem.ExtendedCost);
+                    player.SendSysMessage(ForeverStrings.ExtendedCostNotExist, vItem.ExtendedCost);
                 else
                 {
                     Log.outError(LogFilter.Sql,
@@ -6188,7 +6172,7 @@ namespace Game
             if (vItems.FindItemCostPair(vItem.item, vItem.ExtendedCost, vItem.Type) != null)
             {
                 if (player != null)
-                    player.SendSysMessage(CypherStrings.ItemAlreadyInList, vItem.item, vItem.ExtendedCost, vItem.Type);
+                    player.SendSysMessage(ForeverStrings.ItemAlreadyInList, vItem.item, vItem.ExtendedCost, vItem.Type);
                 else
                 {
                     Log.outError(LogFilter.Sql,
@@ -6744,7 +6728,7 @@ namespace Game
         void OnDeleteSpawnData(SpawnData data)
         {
             var templateIt = _spawnGroupDataStorage.LookupByKey(data.spawnGroupData.groupId);
-            Cypher.Assert(templateIt != null, 
+            Forever.Assert(templateIt != null, 
                 $"Creature data for ({data.type},{data.SpawnId}) " +
                 $"is being deleted and has invalid spawn group index " +
                 $"{data.spawnGroupData.groupId}!");
@@ -6762,7 +6746,7 @@ namespace Game
                 return;
             }
 
-            Cypher.Assert(false, 
+            Forever.Assert(false, 
                 $"Spawn data ({data.type},{data.SpawnId}) " +
                 $"being removed is member of spawn group {data.spawnGroupData.groupId}, " +
                 $"but not actually listed in the lookup table for that group!");
@@ -6902,7 +6886,7 @@ namespace Game
                 case SpawnObjectType.AreaTrigger:
                     return Global.AreaTriggerDataStorage.GetAreaTriggerSpawn(spawnId);
                 default:
-                    Cypher.Assert(false, $"Invalid spawn object Type {type} [{(byte)type}]");
+                    Forever.Assert(false, $"Invalid spawn object Type {type} [{(byte)type}]");
                     return null;
             }
         }
@@ -7193,7 +7177,7 @@ namespace Game
                             Log.outError(LogFilter.Sql,
                                 $"Item id {itemid} (race {currentRace} class {currentClass}) " +
                                 $"in `playercreateinfo_item` table " +
-                                $"but not listed in `itemtemplate`, ignoring.");
+                                $"has no item template loaded from Item.db2/ItemSparse.db2, ignoring.");
                             continue;
                         }
 
@@ -7486,9 +7470,10 @@ namespace Game
             Log.outInfo(LogFilter.ServerLoading, "Loading Player Create Level Stats Data...");
             {
                 {
-                    //                                         0      1      2     3    4    5     6    7     8        9
-                    // Classic health is class base HP plus the health supplied by stamina.
-                    SQLResult result = DB.World.Query("SELECT r.race, c.class, c.level, CAST(c.str + r.str AS SIGNED), CAST(c.agi + r.agi AS SIGNED), CAST(c.sta + r.sta AS SIGNED), CAST(c.inte + r.inte AS SIGNED), CAST(c.spi + r.spi AS SIGNED), c.basehp, c.basemana " +
+                    //                                         0      1      2     3    4    5     6    7     8
+                    // Classic health is class base HP plus the health supplied by stamina. Base stats and health are server data
+                    // (no client DB2 has them); base mana comes from PlayerExpectedStat.db2.
+                    SQLResult result = DB.World.Query("SELECT r.race, c.class, c.level, CAST(c.str + r.str AS SIGNED), CAST(c.agi + r.agi AS SIGNED), CAST(c.sta + r.sta AS SIGNED), CAST(c.inte + r.inte AS SIGNED), CAST(c.spi + r.spi AS SIGNED), c.basehp " +
                         // Only configured race/class pairs own player level data.
                         // A cartesian product invents invalid combinations and logs
                         // thousands of errors even when both source tables are valid.
@@ -7545,7 +7530,7 @@ namespace Game
                             else
                             {
                                 Log.outError(LogFilter.Sql,
-                                    $"Unused (> MaxPlayerLevel in worldserver.conf) level {currentlevel} " +
+                                    $"Unused (> MaxPlayerLevel in foreverworld.conf) level {currentlevel} " +
                                     $"in `player_levelstats` table, ignoring.");
                             }
                             continue;
@@ -7560,9 +7545,7 @@ namespace Game
                             }
 
                             playerInfo.levelInfo[currentlevel - 1].baseHealth = checked((int)result.Read<uint>(8));
-                            var baseMp = CliDB.BaseMPGameTable.GetRow(currentlevel);
-                            int baseMana = checked((int)result.Read<uint>(9));
-                            playerInfo.levelInfo[currentlevel - 1].baseMana = baseMana != 0 ? baseMana : baseMp != null ? (int)CliDB.GetGameTableColumnForClass(baseMp, currentClass) : 0;
+                            playerInfo.levelInfo[currentlevel - 1].baseMana = Global.DB2Mgr.GetPlayerExpectedStat(currentClass, currentlevel)?.BaseMana ?? 0;
                         }
 
                         ++count;
@@ -7684,68 +7667,6 @@ namespace Game
 
                 Log.outInfo(LogFilter.ServerLoading, $"Loaded {count} xp for level definition(s) from database in {Time.Diff(oldMSTime)} ms.");
             }
-        }
-
-        public float GetOCTRegenHP(Class class_, int level)
-        {
-            if (level < 1 || class_ >= Class.Max)
-                return 0.0f;
-
-            if (level > WorldConfig.Values[WorldCfg.MaxPlayerLevel].Int32)
-                level = WorldConfig.Values[WorldCfg.MaxPlayerLevel].Int32;
-
-            GtOCTRegenHPRecord octRegenHP = CliDB.OCTRegenHPGameTable.GetRow(level);
-            if (octRegenHP is null)
-            {
-                Log.outError(LogFilter.Misc, 
-                    $"Tried to get non-existant Class-Level combination data " +
-                    $"from OCTRegenHP. Class {class_} Level {level}.");
-
-                return 0.0f;
-            }
-
-            return CliDB.GetGameTableColumnForClass(octRegenHP, class_);
-        }
-
-        public float GetRegenHPPerSpt(Class class_, int level)
-        {
-            if (level < 1 || class_ >= Class.Max)
-                return 0.0f;
-
-            if (level > WorldConfig.Values[WorldCfg.MaxPlayerLevel].Int32)
-                level = WorldConfig.Values[WorldCfg.MaxPlayerLevel].Int32;
-
-            GtRegenHPPerSptRecord regenHPPerSpt = CliDB.RegenHPPerSptGameTable.GetRow(level);
-            if (regenHPPerSpt is null)
-            {
-                Log.outError(LogFilter.Misc, 
-                    $"Tried to get non-existant Class-Level combination data " +
-                    $"from RegenHPPerSpt. Class {class_} Level {level}.");
-
-                return 0.0f;
-            }
-            return CliDB.GetGameTableColumnForClass(regenHPPerSpt, class_);
-        }
-
-        public float GetRegenMPPerSpt(Class class_, int level)
-        {
-            if (level < 1 || class_ >= Class.Max)
-                return 0.0f;
-
-            if (level > WorldConfig.Values[WorldCfg.MaxPlayerLevel].Int32)
-                level = WorldConfig.Values[WorldCfg.MaxPlayerLevel].Int32;
-
-            GtRegenMPPerSptRecord regenMPPerSpt = CliDB.RegenMPPerSptGameTable.GetRow(level);
-            if (regenMPPerSpt is null)
-            {
-                Log.outError(LogFilter.Misc, 
-                    $"Tried to get non-existant Class-Level combination data " +
-                    $"from RegenMPPerSpt. Class {class_} Level {level}.");
-
-                return 0.0f;
-            }
-
-            return CliDB.GetGameTableColumnForClass(regenMPPerSpt, class_);
         }
 
         void PlayerCreateInfoAddItemHelper(Race race, Class class_, int itemId, int count)
@@ -7899,7 +7820,7 @@ namespace Game
                     else
                     {
                         Log.outInfo(LogFilter.Server, 
-                            $"Unused (> MaxPlayerLevel in worldserver.conf) level {currentlevel} " +
+                            $"Unused (> MaxPlayerLevel in foreverworld.conf) level {currentlevel} " +
                             $"in `pet_levelstats` table, ignoring.");
 
                         ++count;    // make result loading percent "expected" correct in case disabled detail mode for example.
@@ -11026,7 +10947,7 @@ namespace Game
                     if (factionEntry1 == null)
                     {
                         Log.outError(LogFilter.Sql, 
-                            $"Faction (faction.dbc) {repOnKill.RepFaction1} " +
+                            $"Faction.db2 record {repOnKill.RepFaction1} " +
                             $"does not exist but is used in `creature_onkill_reputation`.");
                         continue;
                     }
@@ -11038,7 +10959,7 @@ namespace Game
                     if (factionEntry2 == null)
                     {
                         Log.outError(LogFilter.Sql, 
-                            $"Faction (faction.dbc) {repOnKill.RepFaction2} " +
+                            $"Faction.db2 record {repOnKill.RepFaction2} " +
                             $"does not exist but is used in `creature_onkill_reputation`.");
                         continue;
                     }
@@ -12516,7 +12437,7 @@ namespace Game
 
         public ObjectGuidGenerator GetGenerator(HighGuid high)
         {
-            Cypher.Assert(ObjectGuid.IsGlobal(high) || ObjectGuid.IsRealmSpecific(high), 
+            Forever.Assert(ObjectGuid.IsGlobal(high) || ObjectGuid.IsRealmSpecific(high), 
                 "Only global guid can be generated in ObjectMgr context");
 
             return GetGuidSequenceGenerator(high);
@@ -13064,7 +12985,7 @@ namespace Game
 
         #region Fields
         //General
-        Dictionary<uint, StringArray> CypherStringStorage = new();
+        Dictionary<uint, StringArray> ForeverStringStorage = new();
         Dictionary<int, RepRewardRate> _repRewardRateStorage = new();
         Dictionary<int, ReputationOnKillEntry> _repOnKillStorage = new();
         Dictionary<int, RepSpilloverTemplate> _repSpilloverTemplateStorage = new();
@@ -13234,82 +13155,82 @@ namespace Game
         public ScriptCommands command;
 
         [FieldOffset(16)]
-        public raw Raw;
+        public RawData Raw;
 
         [FieldOffset(16)]
-        public talk Talk;
+        public TalkData Talk;
 
         [FieldOffset(16)]
-        public emote Emote;
+        public EmoteData Emote;
 
         [FieldOffset(16)]
-        public fieldset FieldSet;
+        public FieldSetData FieldSet;
 
         [FieldOffset(16)]
-        public moveto MoveTo;
+        public MoveToData MoveTo;
 
         [FieldOffset(16)]
-        public flagtoggle FlagToggle;
+        public FlagToggleData FlagToggle;
 
         [FieldOffset(16)]
-        public teleportto TeleportTo;
+        public TeleportToData TeleportTo;
 
         [FieldOffset(16)]
-        public questexplored QuestExplored;
+        public QuestExploredData QuestExplored;
 
         [FieldOffset(16)]
-        public killcredit KillCredit;
+        public KillCreditData KillCredit;
 
         [FieldOffset(16)]
-        public respawngameobject RespawnGameObject;
+        public RespawnGameObjectData RespawnGameObject;
 
         [FieldOffset(16)]
-        public tempsummoncreature TempSummonCreature;
+        public TempSummonCreatureData TempSummonCreature;
 
         [FieldOffset(16)]
-        public toggledoor ToggleDoor;
+        public ToggleDoorData ToggleDoor;
 
         [FieldOffset(16)]
-        public removeaura RemoveAura;
+        public RemoveAuraData RemoveAura;
 
         [FieldOffset(16)]
-        public castspell CastSpell;
+        public CastSpellData CastSpell;
 
         [FieldOffset(16)]
-        public playsound PlaySound;
+        public PlaySoundData PlaySound;
 
         [FieldOffset(16)]
-        public createitem CreateItem;
+        public CreateItemData CreateItem;
 
         [FieldOffset(16)]
-        public despawnself DespawnSelf;
+        public DespawnSelfData DespawnSelf;
 
         [FieldOffset(16)]
-        public loadpath LoadPath;
+        public LoadPathData LoadPath;
 
         [FieldOffset(16)]
-        public callscript CallScript;
+        public CallScriptData CallScript;
 
         [FieldOffset(16)]
-        public kill Kill;
+        public KillData Kill;
 
         [FieldOffset(16)]
-        public orientation Orientation;
+        public OrientationData Orientation;
 
         [FieldOffset(16)]
-        public equip Equip;
+        public EquipData Equip;
 
         [FieldOffset(16)]
-        public model Model;
+        public ModelData Model;
 
         [FieldOffset(16)]
-        public playmovie PlayMovie;
+        public PlayMovieData PlayMovie;
 
         [FieldOffset(16)]
-        public movement Movement;
+        public MovementData Movement;
 
         [FieldOffset(16)]
-        public playanimkit PlayAnimKit;
+        public PlayAnimKitData PlayAnimKit;
 
         public string GetDebugInfo()
         {
@@ -13317,32 +13238,32 @@ namespace Game
         }
 
         #region Structs
-        public unsafe struct raw
+        public unsafe struct RawData
         {
             public fixed uint nData[3];
             public fixed float fData[4];
         }
 
-        public struct talk                   // TALK (0)
+        public struct TalkData                   // TALK (0)
         {
             public ChatMsg ChatType;        // datalong
             public eScriptFlags Flags;           // datalong2
             public int TextID;          // dataint
         }
 
-        public struct emote                   // EMOTE (1)
+        public struct EmoteData                   // EMOTE (1)
         {
             public int EmoteID;         // datalong
             public eScriptFlags Flags;           // datalong2
         }
 
-        public struct fieldset                    // FIELDSET (2)
+        public struct FieldSetData                    // FIELDSET (2)
         {
             public uint FieldID;         // datalong
             public uint FieldValue;      // datalong2
         }
 
-        public struct moveto                   // MOVETO (3)
+        public struct MoveToData                   // MOVETO (3)
         {
             public uint Unused1;         // datalong
             public Milliseconds TravelTime;      // datalong2
@@ -13353,14 +13274,14 @@ namespace Game
             public float DestZ;
         }
 
-        public struct flagtoggle                   // FLAGSET (4)
+        public struct FlagToggleData                   // FLAGSET (4)
         // FLAGREMOVE (5)
         {
             public uint FieldID;         // datalong
             public uint FieldValue;      // datalong2
         }
 
-        public struct teleportto                 // TELEPORTTO (6)
+        public struct TeleportToData                 // TELEPORTTO (6)
         {
             public int MapID;           // datalong
             public eScriptFlags Flags;           // datalong2
@@ -13372,25 +13293,25 @@ namespace Game
             public float Orientation;
         }
 
-        public struct questexplored                  // QUESTEXPLORED (7)
+        public struct QuestExploredData                  // QUESTEXPLORED (7)
         {
             public int QuestID;         // datalong
             public uint Distance;        // datalong2
         }
 
-        public struct killcredit                    // KILLCREDIT (8)
+        public struct KillCreditData                    // KILLCREDIT (8)
         {
             public int CreatureEntry;   // datalong
             public eScriptFlags Flags;           // datalong2
         }
 
-        public struct respawngameobject                 // RESPAWNGAMEOBJECT (9)
+        public struct RespawnGameObjectData                 // RESPAWNGAMEOBJECT (9)
         {
             public uint GOGuid;          // datalong
             public TimeSpan DespawnDelay;    // datalong2
         }
 
-        public struct tempsummoncreature                // TEMPSUMMONCREATURE (10)
+        public struct TempSummonCreatureData                // TEMPSUMMONCREATURE (10)
         {
             public int CreatureEntry;   // datalong
             public Milliseconds DespawnDelay;    // datalong2
@@ -13402,7 +13323,7 @@ namespace Game
             public float Orientation;
         }
 
-        public struct toggledoor                  // CLOSEDOOR (12)
+        public struct ToggleDoorData                  // CLOSEDOOR (12)
         // OPENDOOR (11)
         {
             public uint GOGuid;          // datalong
@@ -13411,13 +13332,13 @@ namespace Game
 
         // ACTIVATEOBJECT (13)
 
-        public struct removeaura                   // REMOVEAURA (14)
+        public struct RemoveAuraData                   // REMOVEAURA (14)
         {
             public int SpellID;         // datalong
             public eScriptFlags Flags;           // datalong2
         }
 
-        public struct castspell                  // CASTSPELL (15)
+        public struct CastSpellData                  // CASTSPELL (15)
         {
             public int SpellID;         // datalong
             public eScriptFlags Flags;           // datalong2
@@ -13426,44 +13347,44 @@ namespace Game
             public float SearchRadius;
         }
 
-        public struct playsound                     // PLAYSOUND (16)
+        public struct PlaySoundData                     // PLAYSOUND (16)
         {
             public int SoundID;         // datalong
             public eScriptFlags Flags;           // datalong2
         }
 
-        public struct createitem                   // CREATEITEM (17)
+        public struct CreateItemData                   // CREATEITEM (17)
         {
             public int ItemEntry;       // datalong
             public int Amount;          // datalong2
         }
 
-        public struct despawnself                 // DESPAWNSELF (18)
+        public struct DespawnSelfData                 // DESPAWNSELF (18)
         {
             public Milliseconds DespawnDelay;    // datalong
         }
 
-        public struct loadpath                    // LOADPATH (20)
+        public struct LoadPathData                    // LOADPATH (20)
         {
             public int PathID;          // datalong
             public int IsRepeatable;    // datalong2
         }
 
-        public struct callscript                   // CALLSCRIPTTOUNIT (21)
+        public struct CallScriptData                   // CALLSCRIPTTOUNIT (21)
         {
             public int CreatureEntry;   // datalong
             public int ScriptID;        // datalong2
             public int ScriptType;      // dataint
         }
 
-        public struct kill                    // KILL (22)
+        public struct KillData                    // KILL (22)
         {
             public uint Unused1;         // datalong
             public uint Unused2;         // datalong2
             public int RemoveCorpse;    // dataint
         }
 
-        public struct orientation                    // ORIENTATION (30)
+        public struct OrientationData                    // ORIENTATION (30)
         {
             public eScriptFlags Flags;           // datalong
             public uint Unused1;         // datalong2
@@ -13475,31 +13396,31 @@ namespace Game
             public float _Orientation;
         }
 
-        public struct equip                  // EQUIP (31)
+        public struct EquipData                  // EQUIP (31)
         {
             public int EquipmentID;     // datalong
         }
 
-        public struct model                    // MODEL (32)
+        public struct ModelData                    // MODEL (32)
         {
             public int ModelID;         // datalong
         }
 
         // CLOSEGOSSIP (33)
 
-        public struct playmovie                    // PLAYMOVIE (34)
+        public struct PlayMovieData                    // PLAYMOVIE (34)
         {
             public int MovieID;         // datalong
         }
 
-        public struct movement                      // SCRIPT_COMMAND_MOVEMENT (35)
+        public struct MovementData                      // SCRIPT_COMMAND_MOVEMENT (35)
         {
             public int MovementType;     // datalong
             public int MovementDistance; // datalong2
             public int Path;             // dataint
         }
 
-        public struct playanimkit                  // SCRIPT_COMMAND_PLAY_ANIMKIT (36)
+        public struct PlayAnimKitData                  // SCRIPT_COMMAND_PLAY_ANIMKIT (36)
         {
             public int AnimKitID;       // datalong
         }
@@ -14229,7 +14150,7 @@ namespace Game
             // script id 0 as dummy for "no script found".
             int id = Insert("", false);
 
-            Cypher.Assert(id <= 0);
+            Forever.Assert(id <= 0);
         }
 
         public int Insert(string scriptName, bool isScriptNameBound)
@@ -14238,7 +14159,7 @@ namespace Game
             var result = NameToIndex.TryAdd(scriptName, entry);
             if (result)
             {
-                Cypher.Assert(NameToIndex.Count <= int.MaxValue);
+                Forever.Assert(NameToIndex.Count <= int.MaxValue);
                 IndexToName.Add(entry);
             }
 

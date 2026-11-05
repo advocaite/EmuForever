@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using System;
@@ -15,7 +15,7 @@ namespace Framework.Networking.Http
 
         public SslSocket(Socket socket) : base(socket)
         {
-            _certificate = new X509Certificate2(ConfigMgr.GetDefaultValue("CertificatesFile", "./BNetServer.pfx"));
+            _certificate = X509CertificateLoader.LoadPkcs12FromFile(ConfigMgr.GetDefaultValue("CertificatesFile", "./BNetServer.pfx"), null);
         }
 
         public async override void Start()

@@ -11,9 +11,19 @@ namespace Game
     public partial class WorldSession
     {
         public bool IsServerControlled { get; }
+        // Gameplay authorization is separate from the headless session's socket,
+        // visibility, login and clock handling. .si me keeps a normal client session.
+        public bool IsSIControlled => IsServerControlled || _player?.Controller != null;
+
+        internal static bool IsSelfSIClientInput(ClientOpcodes opcode) => opcode is
+            ClientOpcodes.CastSpell or ClientOpcodes.UseItem or ClientOpcodes.CancelCast or
+            ClientOpcodes.CancelChannelling or ClientOpcodes.CancelAutoRepeatSpell or
+            ClientOpcodes.AttackSwing or ClientOpcodes.AttackStop or ClientOpcodes.SetSelection or
+            ClientOpcodes.PetAction or ClientOpcodes.PetCastSpell or ClientOpcodes.GameObjUse;
         bool _siRegistered;
         CharacterCreateInfo _siCreateInfo;
         Action<ResponseCodes, ObjectGuid> _siCreateCompleted;
+        bool _siSpawnAfterCreation;
 
         internal void CompleteSIActiveMoverInitialization()
         {
@@ -50,10 +60,11 @@ namespace Game
             return selected.Count > 0 && ValidateAppearance(race, playerClass, gender, selected);
         }
 
-        internal void SetSICreation(CharacterCreateInfo info, Action<ResponseCodes, ObjectGuid> completed)
+        internal void SetSICreation(CharacterCreateInfo info, Action<ResponseCodes, ObjectGuid> completed, bool spawnOnSuccess = false)
         {
             _siCreateInfo = info;
             _siCreateCompleted = completed;
+            _siSpawnAfterCreation = spawnOnSuccess;
         }
 
         void StartSICharacter()
@@ -66,10 +77,30 @@ namespace Game
 
         void CompleteSICreation(ResponseCodes result, ObjectGuid guid)
         {
-            _siCreateCompleted?.Invoke(result, guid);
+            var completed = _siCreateCompleted;
+            bool spawn = _siSpawnAfterCreation && result == ResponseCodes.CharCreateSuccess && !guid.IsEmpty() && !PlayerDisconnected();
             _siCreateCompleted = null;
             _siCreateInfo = null;
-            KickPlayer("siPlayer character creation completed");
+            _siSpawnAfterCreation = false;
+            try { completed?.Invoke(result, guid); }
+            catch (Exception error) { Log.outError(LogFilter.SI,"SI creation completion callback failed: "+error); }
+            finally
+            {
+                if (spawn && !PlayerDisconnected())
+                {
+                    // Reuse the initialized headless session after the creation
+                    // transaction commits, using the normal native login path.
+                    SetSICharacter(guid);
+                    HandleContinuePlayerLogin();
+                }
+                else KickPlayer("siPlayer character creation completed");
+            }
+        }
+
+        internal void QueueAreaSpiritHealerForSI(Creature healer)
+        {
+            if(IsSIControlled&&_player!=null&&!_player.IsAlive()&&healer!=null)
+                HandleAreaSpiritHealerQueue(new AreaSpiritHealerQueue(null){HealerGuid=healer.GetGUID()});
         }
 
         internal void RegisterSIAccount()

@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -11,8 +11,10 @@ using System.Collections.Generic;
 
 namespace Game.BattleGrounds.Zones.WarsongGluch
 {
-    class BgWarsongGluch : Battleground
+    partial class BgWarsongGluch : Battleground
     {
+        internal bool UsesClassicWarsongObjects => GetMapId() is 489 or 2996;
+        internal int ClassicWarsongSpawnGroup(int group) => (GetMapId()==2996?2996000:489000)+group;
         Team _lastFlagCaptureTeam;                       // Winner is based on this if score is equal
 
         int m_ReputationCapture;
@@ -38,6 +40,7 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
         public override void PostUpdateImpl(TimeSpan diff)
         {
+            TickClassicFlags(diff);
             if (GetStatus() == BattlegroundStatus.InProgress)
             {
                 if (GetElapsedTime() >= (Minutes)17)
@@ -128,13 +131,24 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
         public override void StartingEventOpenDoors()
         {
+            OpenClassicStartDoors();
+            if (UsesClassicWarsongObjects)
+            {
+                UpdateFlagState(Team.Alliance, FlagState.InBase);
+                UpdateFlagState(Team.Horde, FlagState.InBase);
+            }
+            if (UsesClassicWarsongObjects) SetClassicSpawnGroup(ClassicWarsongSpawnGroup(3), false);
             foreach (ObjectGuid door in _doors)
             {
                 GameObject gameObject = GetBgMap().GetGameObject(door);
                 if (gameObject != null)
                 {
-                    gameObject.UseDoorOrButton();
-                    gameObject.DespawnOrUnsummon((Seconds)3);
+                    if (UsesClassicWarsongObjects) gameObject.SetGoState(GameObjectState.Active);
+                    else
+                    {
+                        gameObject.UseDoorOrButton();
+                        gameObject.DespawnOrUnsummon((Seconds)3);
+                    }
                 }
             }
 
@@ -155,6 +169,7 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
         FlagState GetFlagState(int team)
         {
+            if (UsesClassicWarsongObjects) return _classicFlagState[team];
             GameObject gameObject = FindBgMap().GetGameObject(_flags[team]);
             if (gameObject != null)
                 return gameObject.GetFlagState();
@@ -164,6 +179,7 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
         ObjectGuid GetFlagCarrierGUID(int team)
         {
+            if (UsesClassicWarsongObjects) return _classicFlagCarrier[team];
             GameObject gameObject = FindBgMap().GetGameObject(_flags[team]);
             if (gameObject != null)
                 return gameObject.GetFlagCarrierGUID();
@@ -185,6 +201,14 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
         void UpdateFlagState(Team team, FlagState value)
         {
+            TrackFlagAwayForSI(GetTeamIndexByTeamId(team), value);
+            if (UsesClassicWarsongObjects)
+            {
+                var state = ClassicFlagWorldState(team, value);
+                UpdateWorldState(state.FlagId, state.FlagValue);
+                UpdateWorldState(state.CarrierId, state.CarrierValue);
+                return;
+            }
             int transformValueToOtherTeamControlWorldState(FlagState value)
             {
                 switch (value)
@@ -212,6 +236,14 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
             }
         }
 
+        // Classic's flag-location state belongs to the flag's owner, while
+        // the score-panel carrier indicator belongs to the opposing team.
+        internal static (int FlagId, int FlagValue, int CarrierId, int CarrierValue) ClassicFlagWorldState(Team owner, FlagState state) =>
+            (owner == Team.Alliance ? WorldStateIds.FlagStateAlliance : WorldStateIds.FlagStateHorde,
+             state == FlagState.Taken ? 1 : state == FlagState.Dropped ? -1 : 0,
+             owner == Team.Alliance ? WorldStateIds.FlagControlHorde : WorldStateIds.FlagControlAlliance,
+             state == FlagState.Taken ? 2 : 1);
+
         void UpdateTeamScore(int team)
         {
             if (team == BattleGroundTeamId.Alliance)
@@ -222,6 +254,8 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
         public override bool SetupBattleground()
         {
+            if (UsesClassicWarsongObjects)
+                for (int group = 1; group <= 4; ++group) SetClassicSpawnGroup(ClassicWarsongSpawnGroup(group), true);
             return true;
         }
 
@@ -248,9 +282,13 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
             _lastFlagCaptureTeam = Team.Other;
             _bothFlagsKept = false;
+            Array.Clear(_siFlagAwaySince);
 
             _doors.Clear();
             _flags.Clear();
+            Array.Fill(_classicFlagState, FlagState.InBase); Array.Clear(_classicFlagCarrier);
+            Array.Clear(_classicFlagDrop); Array.Clear(_classicFlagTimer);
+            _classicFlagReset = false;
             _assaultStackCount = 0;
             _flagAssaultTimer.Reset(MiscConst.FlagAssaultTimer);
             _capturePointAreaTriggers.Clear();
@@ -302,11 +340,21 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
         public override WorldSafeLocsEntry GetClosestGraveyard(Player player)
         {
+            // Classic flag rooms have indoor areas whose graveyard links differ
+            // from the outdoor zone. Both rooms use their team's spirit guide.
+            if (UsesClassicWarsongObjects)
+                return BattlegroundTemplate.RemapLocation(Global.ObjectMgr.GetWorldSafeLoc(ClassicGraveyardId(player.GetBGTeam(), GetStatus())),GetMapId());
             return Global.ObjectMgr.GetClosestGraveyard(player, player.GetBGTeam(), player);
         }
 
+        internal static int ClassicGraveyardId(Team team, BattlegroundStatus status) =>
+            status is BattlegroundStatus.WaitQueue or BattlegroundStatus.WaitJoin
+                ? team == Team.Alliance ? 769 : 770
+                : team == Team.Alliance ? 771 : 772;
+
         public override WorldSafeLocsEntry GetExploitTeleportLocation(Team team)
         {
+            if(UsesClassicWarsongObjects)return GetTeamStartPosition(GetTeamIndexByTeamId(team));
             return Global.ObjectMgr.GetWorldSafeLoc(
                 team == Team.Alliance 
                 ? MiscConst.ExploitTeleportLocationAlliance 
@@ -325,8 +373,23 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
         public override void OnGameObjectCreate(GameObject gameObject)
         {
+            TrackObjectiveObjectForSI(gameObject);
             switch (gameObject.GetEntry())
             {
+                case 179916:
+                case 179917:
+                case 179918:
+                case 179919:
+                case 179920:
+                case 179921:
+                    _doors.Add(gameObject.GetGUID());
+                    if (UsesClassicWarsongObjects && GetStatus() is BattlegroundStatus.InProgress or BattlegroundStatus.WaitLeave)
+                        gameObject.SetGoState(GameObjectState.Active);
+                    break;
+                case 180322: // Invisible preparation barrier; a late grid must not close it again.
+                    if (UsesClassicWarsongObjects && GetStatus() is BattlegroundStatus.InProgress or BattlegroundStatus.WaitLeave)
+                        gameObject.SetGoState(GameObjectState.Active);
+                    break;
                 case GameobjectIds.AllianceDoor:
                 case GameobjectIds.Portcullis009:
                 case GameobjectIds.Portcullis002:
@@ -336,9 +399,11 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
                     _doors.Add(gameObject.GetGUID());
                     break;
                 case GameobjectIds.AllianceFlagInBase:
+                case 179830:
                     _flags[BattleGroundTeamId.Alliance] = gameObject.GetGUID();
                     break;
                 case GameobjectIds.HordeFlagInBase:
+                case 179831:
                     _flags[BattleGroundTeamId.Horde] = gameObject.GetGUID();
                     break;
                 default:
@@ -544,8 +609,8 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
 
             if (winner != Team.Other)
             {
-                UpdateWorldState(WorldStateIds.FlagStateAlliance, 1);
-                UpdateWorldState(WorldStateIds.FlagStateHorde, 1);
+                UpdateFlagState(Team.Alliance, FlagState.InBase);
+                UpdateFlagState(Team.Horde, FlagState.InBase);
                 UpdateWorldState(WorldStateIds.StateTimerActive, 0);
 
                 RewardHonorToTeam(MiscConst.Honor[Global.BattlegroundMgr.IsBGWeekend(GetTypeID()) ? 1 : 0][(int)Rewards.Win], winner);
@@ -621,8 +686,8 @@ namespace Game.BattleGrounds.Zones.WarsongGluch
             [60, 40, 80]  // Holiday
         };
 
-        public const int PvpStatFlagCaptures = 928;
-        public const int PvpStatFlagReturns = 929;
+        public const int PvpStatFlagCaptures = 42;
+        public const int PvpStatFlagReturns = 44;
     }
 
 

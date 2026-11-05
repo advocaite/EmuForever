@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 namespace Framework.Database
@@ -7,6 +7,7 @@ namespace Framework.Database
     {
         public override void PreparedStatements()
         {
+            PrepareStatement(LoginStatements.SEL_BNET_ACCOUNT_SECURED, "SELECT EXISTS(SELECT 1 FROM bnot_accounts WHERE id = ? AND authenticator_secret IS NOT NULL AND authenticator_secret <> '')");
             PrepareStatement(LoginStatements.SEL_LEGACY_CHALLENGES, "SELECT challenge_id, completed_at FROM legacy_account_challenge WHERE account_kind = ? AND account_id = ? AND ruleset = ?");
             PrepareStatement(LoginStatements.INS_LEGACY_CHALLENGE, "INSERT IGNORE INTO legacy_account_challenge (account_kind, account_id, ruleset, challenge_id, completed_at, source_guid) VALUES (?, ?, ?, ?, ?, ?)");
             PrepareStatement(LoginStatements.SEL_LEGACY_WOW_ACCOUNTS, "SELECT id FROM account WHERE battlenet_account = ?");
@@ -18,7 +19,7 @@ namespace Framework.Database
             PrepareStatement(LoginStatements.DEL_EXPIRED_IP_BANS, "DELETE FROM ip_banned WHERE unbandate<>bandate AND unbandate<=UNIX_TIMESTAMP()");
             PrepareStatement(LoginStatements.UPD_EXPIRED_ACCOUNT_BANS, "UPDATE account_banned SET active = 0 WHERE active = 1 AND unbandate<>bandate AND unbandate<=UNIX_TIMESTAMP()");
             PrepareStatement(LoginStatements.SEL_IP_INFO, "SELECT unbandate > UNIX_TIMESTAMP() OR unbandate = bandate AS banned, NULL as country FROM ip_banned WHERE ip = ?");
-            PrepareStatement(LoginStatements.INS_IP_AUTO_BANNED, "INSERT INTO ip_banned (ip, bandate, unbandate, bannedby, banreason) VALUES (?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP()+?, 'Cypher Auth', 'Failed login autoban')");
+            PrepareStatement(LoginStatements.INS_IP_AUTO_BANNED, "INSERT INTO ip_banned (ip, bandate, unbandate, bannedby, banreason) VALUES (?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP()+?, 'Forever Auth', 'Failed login autoban')");
             PrepareStatement(LoginStatements.SEL_IP_BANNED_ALL, "SELECT ip, bandate, unbandate, bannedby, banreason FROM ip_banned WHERE (bandate = unbandate OR unbandate > UNIX_TIMESTAMP()) ORDER BY unbandate");
             PrepareStatement(LoginStatements.SEL_IP_BANNED_BY_IP, "SELECT ip, bandate, unbandate, bannedby, banreason FROM ip_banned WHERE (bandate = unbandate OR unbandate > UNIX_TIMESTAMP()) AND ip LIKE CONCAT('%%', ?, '%%') ORDER BY unbandate");
             PrepareStatement(LoginStatements.SEL_ACCOUNT_BANNED_ALL, "SELECT account.id, username FROM account, account_banned WHERE account.id = account_banned.id AND active = 1 GROUP BY account.id");
@@ -122,7 +123,7 @@ namespace Framework.Database
             PrepareStatement(LoginStatements.SEL_BNET_LAST_PLAYER_CHARACTERS, "SELECT lpc.accountId, lpc.region, lpc.battlegroup, lpc.realmId, lpc.characterName, lpc.characterGUID, lpc.lastPlayedTime FROM account_last_played_character lpc LEFT JOIN account a ON lpc.accountId = a.id WHERE a.battlenet_account = ?");
             PrepareStatement(LoginStatements.DEL_BNET_LAST_PLAYER_CHARACTERS, "DELETE FROM account_last_played_character WHERE accountId = ? AND region = ? AND battlegroup = ?");
             PrepareStatement(LoginStatements.INS_BNET_LAST_PLAYER_CHARACTERS, "INSERT INTO account_last_played_character (accountId, region, battlegroup, realmId, characterName, characterGUID, lastPlayedTime) VALUES (?,?,?,?,?,?,?)");
-            PrepareStatement(LoginStatements.INS_BNET_ACCOUNT, "INSERT INTO bnot_accounts (`email`,`srp_version`,`salt`,`verifier`) VALUES (?, ?, ?, ?)");
+            PrepareStatement(LoginStatements.INS_BNET_ACCOUNT, "INSERT INTO bnot_accounts (`email`,`srp_version`,`salt`,`verifier`,`id`) VALUES (?, ?, ?, ?, ?)");
             PrepareStatement(LoginStatements.SEL_BNET_ACCOUNT_EMAIL_BY_ID, "SELECT email FROM bnot_accounts WHERE id = ?");
             PrepareStatement(LoginStatements.SEL_BNET_ACCOUNT_ID_BY_EMAIL, "SELECT id FROM bnot_accounts WHERE email = ?");
             PrepareStatement(LoginStatements.UPD_BNET_LOGON, "UPDATE bnot_accounts SET srp_version = ?, salt = ?, verifier = ? WHERE id = ?");
@@ -137,7 +138,7 @@ namespace Framework.Database
             PrepareStatement(LoginStatements.SEL_BNET_GAME_ACCOUNT_LIST, "SELECT a.username, a.expansion, ab.bandate, ab.unbandate, ab.banreason FROM account AS a LEFT JOIN account_banned AS ab ON a.id = ab.id AND ab.active = 1 INNER JOIN bnot_accounts AS ba ON a.battlenet_account = ba.id WHERE ba.LoginTicket = ? ORDER BY a.id");
 
             PrepareStatement(LoginStatements.UPD_BNET_FAILED_LOGINS, "UPDATE bnot_accounts SET failed_logins = failed_logins + 1 WHERE id = ?");
-            PrepareStatement(LoginStatements.INS_BNET_ACCOUNT_AUTO_BANNED, "INSERT INTO bnot_account_bans(id, bandate, unbandate, bannedby, banreason) VALUES(?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP()+?, 'Cypher Auth', 'Failed login autoban')");
+            PrepareStatement(LoginStatements.INS_BNET_ACCOUNT_AUTO_BANNED, "INSERT INTO bnot_account_bans(id, bandate, unbandate, bannedby, banreason) VALUES(?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP()+?, 'Forever Auth', 'Failed login autoban')");
             PrepareStatement(LoginStatements.DEL_BNET_EXPIRED_ACCOUNT_BANNED, "DELETE FROM bnot_account_bans WHERE unbandate<>bandate AND unbandate<=UNIX_TIMESTAMP()");
             PrepareStatement(LoginStatements.UPD_BNET_RESET_FAILED_LOGINS, "UPDATE bnot_accounts SET failed_logins = 0 WHERE id = ?");
 
@@ -147,6 +148,10 @@ namespace Framework.Database
             // Account wide toys
             PrepareStatement(LoginStatements.SEL_ACCOUNT_TOYS, "SELECT itemId, isFavourite, hasFanfare FROM bnot_account_toys WHERE accountId = ?");
             PrepareStatement(LoginStatements.REP_ACCOUNT_TOYS, "REPLACE INTO bnot_account_toys (accountId, itemId, isFavourite, hasFanfare) VALUES (?, ?, ?, ?)");
+
+            // Classic 1.60 experience preset (Classic or Enhanced), chosen once on the glue screen
+            PrepareStatement(LoginStatements.SEL_BNET_EXPERIENCE_PRESET, "SELECT classic FROM bnot_account_experience_preset WHERE accountId = ?");
+            PrepareStatement(LoginStatements.REP_BNET_EXPERIENCE_PRESET, "REPLACE INTO bnot_account_experience_preset (accountId, classic) VALUES (?, ?)");
 
             // Battle Pets
             PrepareStatement(LoginStatements.SEL_BATTLE_PETS, "SELECT bp.guid, bp.species, bp.breed, bp.displayId, bp.level, bp.exp, bp.health, bp.quality, bp.flags, bp.name, bp.nameTimestamp, bp.owner, dn.genitive, dn.dative, dn.accusative, dn.instrumental, dn.prepositional FROM battle_pets bp LEFT JOIN battle_pet_declinedname dn ON bp.guid = dn.guid WHERE bp.battlenetAccountId = ? AND (bp.ownerRealmId IS NULL OR bp.ownerRealmId = ?)");
@@ -307,6 +312,9 @@ namespace Framework.Database
         SEL_ACCOUNT_TOYS,
         REP_ACCOUNT_TOYS,
 
+        SEL_BNET_EXPERIENCE_PRESET,
+        REP_BNET_EXPERIENCE_PRESET,
+
         SEL_BATTLE_PETS,
         INS_BATTLE_PETS,
         DEL_BATTLE_PETS,
@@ -337,6 +345,7 @@ namespace Framework.Database
         INS_LEGACY_CHALLENGE,
         UPSERT_LEGACY_REWARD,
         SEL_LEGACY_WOW_ACCOUNTS,
+        SEL_BNET_ACCOUNT_SECURED,
         MAX_LOGINDATABASE_STATEMENTS
     }
 }

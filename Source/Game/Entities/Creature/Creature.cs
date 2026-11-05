@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -135,7 +135,6 @@ namespace Game.Entities
             return m_formation.CanLeaderStartMoving();
         }
 
-        bool _populationScaledRespawn;
         public void RemoveCorpse(bool setSpawnTime = true, bool destroyForNearbyPlayers = true)
         {
             if (GetDeathState() != DeathState.Corpse)
@@ -157,7 +156,7 @@ namespace Game.Entities
                     UpdateObjectVisibilityOnDestroy();
 
                 // Should get removed later, just keep "compatibility" with scripts
-                if (setSpawnTime&&!_populationScaledRespawn)
+                if (setSpawnTime)
                     m_respawnTime = (ServerTime)Time.Max(LoopTime.ServerTime + respawnDelay, m_respawnTime);
 
                 // if corpse was removed during falling, the falling will continue and override relocation to respawn position
@@ -194,7 +193,7 @@ namespace Game.Entities
                 // In case this is called directly and normal respawn timer not set
                 // Since this timer will be longer than the already present time it
                 // will be ignored if the correct place added a respawn timer
-                if (setSpawnTime&&!_populationScaledRespawn)
+                if (setSpawnTime)
                 {
                     TimeSpan respawnDelay = m_respawnDelay;
                     m_respawnTime = (ServerTime)Time.Max(LoopTime.ServerTime + respawnDelay, m_respawnTime);
@@ -430,8 +429,8 @@ namespace Game.Entities
         // same total time; only their granularity changes. A wandering creature's server position advances in
         // 300 ms steps, which clients never see (they animate the spline). Aggro is detected separately, by
         // relocation notifies, so a player walking up is still noticed at once.
+        // The time is measured by WorldObject.ElapsedSinceUpdate.
         public static readonly TimeSpan IdleUpdateInterval = TimeSpan.FromMilliseconds(300);
-        internal TimeSpan PendingUpdateDiff;
         internal bool CanDeferIdleUpdate() => IsInWorld && !IsInCombat() && GetVictim() == null &&
             !HasUnitState(UnitState.Evade | UnitState.Fleeing | UnitState.Confused | UnitState.Casting) &&
             GetCharmerOrOwnerGUID().IsEmpty() && !IsPet() && GetVehicleKit() == null && GetVehicle() == null &&
@@ -439,11 +438,14 @@ namespace Game.Entities
 
         public override void Update(TimeSpan diff)
         {
+            // Area spirit guides resurrect on a 30 s channel. One spawned mid-battle (a base graveyard opening) could miss its
+            // first cast and stand idle, its queue timer at 0, so the client never queued anyone: restart it whenever it lapses.
+            if (IsAreaSpiritHealer() && !IsAreaSpiritHealerIndividual() && IsAlive() && GetChannelSpellId() == 0
+                && GetCurrentSpell(CurrentSpellTypes.Channeled) == null)
+                CastSpell(null, BattlegroundConst.SpellSpiritHealChannelAoE, true);
+
             if (IsAIEnabled() && triggerJustAppeared && m_deathState != DeathState.Dead)
             {
-                if (IsAreaSpiritHealer() && !IsAreaSpiritHealerIndividual())
-                    CastSpell(null, BattlegroundConst.SpellSpiritHealChannelAoE, false);
-
                 if (m_respawnCompatibilityMode && VehicleKit != null)
                     VehicleKit.Reset();
 
@@ -635,6 +637,10 @@ namespace Game.Entities
 
                         RegenTimer = SharedConst.CreatureRegenInterval;
                     }
+
+                    // A victim inside melee reach is reachable whatever the navmesh says: no "Evade" on hits that land.
+                    if (CanNotReachTarget() && GetVictim() != null && IsWithinMeleeRange(GetVictim()))
+                        SetCannotReachTarget(false);
 
                     if (CanNotReachTarget() && !IsInEvadeMode() && !GetMap().IsRaid())
                     {
@@ -1056,7 +1062,8 @@ namespace Game.Entities
 
         public bool CanResetTalents(Player player)
         {
-            return player.GetLevel() >= 15 && player.GetClass() == GetCreatureTemplate().TrainerClass;
+            return player.GetLevel() >= 10 // Classic 1.60: vanilla talents start at level 10 (TC; retail 15)
+                && player.GetClass() == GetCreatureTemplate().TrainerClass;
         }
 
         public void SetTextRepeatId(byte textGroup, byte id)
@@ -1099,9 +1106,18 @@ namespace Game.Entities
             return false;
         }
 
+        // Retail behaviour: a creature that has just respawned ignores everything around it for a few seconds,
+        // so it cannot ambush whoever is standing on its spawn point. Being attacked engages it at once.
+        public void StartRespawnAggroGrace()
+        {
+            _respawnAggroGraceUntil = LoopTime.ServerTime + SharedConst.CreatureRespawnAggroGrace;
+        }
+
         public override void AtEngage(Unit target)
         {
             base.AtEngage(target);
+
+            _respawnAggroGraceUntil = ServerTime.Zero;
 
             if (!HasFlag(CreatureStaticFlags2.AllowMountedCombat))
                 Dismount();
@@ -1439,7 +1455,7 @@ namespace Game.Entities
 
             if (data.SpawnId == 0)
                 data.SpawnId = m_spawnId;
-            Cypher.Assert(data.SpawnId == m_spawnId);
+            Forever.Assert(data.SpawnId == m_spawnId);
 
             data.Id = GetEntry();
             if (displayId != 0)
@@ -1569,7 +1585,7 @@ namespace Game.Entities
             // mana
             PowerType powerType = CalculateDisplayPowerType();
             SetCreateMana(stats.BaseMana);
-            StatMods.SetMult(UnitMods.PowerStart + (int)powerType, GetCreatureTemplateStats().ManaModifier, UnitModType.BasePermanent);
+            StatMods.SetMult(UnitModManager.GetPowerUnitMod(powerType), GetCreatureTemplateStats().ManaModifier, UnitModType.BasePermanent);
             SetPowerType(powerType);
 
             PowerTypeRecord powerTypeEntry = Global.DB2Mgr.GetPowerTypeEntry(powerType);
@@ -1978,6 +1994,10 @@ namespace Game.Entities
 
             if (!force)
             {
+                // A freshly respawned creature does not start fights on its own (see StartRespawnAggroGrace).
+                if (LoopTime.ServerTime < _respawnAggroGraceUntil)
+                    return false;
+
                 if (!_IsTargetAcceptable(who))
                     return false;
 
@@ -2047,15 +2067,13 @@ namespace Game.Entities
                 if (scalingMode > 0)
                     GetMap().ApplyDynamicModeRespawnScaling(this, m_spawnId, ref respawnDelay, scalingMode);
 
-                _populationScaledRespawn=respawnDelay<m_respawnDelay;
-                if(_populationScaledRespawn&&m_corpseRemoveTime>LoopTime.ServerTime+respawnDelay)m_corpseRemoveTime=LoopTime.ServerTime+respawnDelay;
                 // @todo remove the boss respawn time hack in a dynspawn follow-up once we have creature groups in instances
                 if (m_respawnCompatibilityMode)
                 {
                     if (IsDungeonBoss() && m_respawnDelay == TimeSpan.Zero)
                         m_respawnTime = ServerTime.Infinity; // never respawn in this instance
                     else
-                        m_respawnTime = LoopTime.ServerTime + respawnDelay + (_populationScaledRespawn?Seconds.Zero:m_corpseDelay);
+                        m_respawnTime = LoopTime.ServerTime + respawnDelay + m_corpseDelay;
                 }
                 else
                 {
@@ -2169,6 +2187,7 @@ namespace Game.Entities
                     SelectLevel();
 
                     SetDeathState(DeathState.JustRespawned);
+                    StartRespawnAggroGrace();
 
                     CreatureModel display = new(GetNativeDisplayId(), GetNativeDisplayScale(), 1.0f);
                     if (Global.ObjectMgr.GetCreatureModelRandomGender(ref display, GetCreatureTemplate()) != null)
@@ -2706,8 +2725,10 @@ namespace Game.Entities
 
         public void StartDefaultCombatMovement(Unit victim, float? range = null, float? angle = null)
         {
+            // An unset range/angle must stay unset: ChaseAngle(0) means "stay in front of the victim", which made every
+            // melee mob circle to the player's face, stack there, and swing back and forth in front of a fleeing player.
             if (!HasFlag(CreatureStaticFlags.NoMeleeFlee) || IsSummon())
-                GetMotionMaster().MoveChase(victim, range.GetValueOrDefault(0), angle.GetValueOrDefault(0));
+                GetMotionMaster().MoveChase(victim, range.HasValue ? new Movement.ChaseRange(range.Value) : null, angle.HasValue ? new Movement.ChaseAngle(angle.Value) : null);
             else
                 GetMotionMaster().MoveFleeing(victim);
         }
@@ -2875,19 +2896,12 @@ namespace Game.Entities
                 return hasSkinningLoot;
             }
 
-            var previousRemoveTime=m_corpseRemoveTime;
             if (isFullySkinned())
                 m_corpseRemoveTime = now;
             else
                 m_corpseRemoveTime = now + (Seconds)(m_corpseDelay * decayRate);
 
-            if(_populationScaledRespawn)
-            {
-                // Looting/compatibility corpse cleanup must not restore the unscaled
-                // base delay after death already scheduled a population-based respawn.
-                if(m_corpseRemoveTime>previousRemoveTime)m_corpseRemoveTime=previousRemoveTime;
-            }
-            else m_respawnTime = (ServerTime)Time.Max(m_corpseRemoveTime + m_respawnDelay, m_respawnTime);
+            m_respawnTime = (ServerTime)Time.Max(m_corpseRemoveTime + m_respawnDelay, m_respawnTime);
         }        
 
         public override void SetInteractionAllowedWhileHostile(bool interactionAllowed)

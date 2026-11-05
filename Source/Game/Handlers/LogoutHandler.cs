@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -10,9 +10,18 @@ namespace Game
 {
     public partial class WorldSession
     {
+        internal bool PreventSIIdleLogout(bool idle)
+        {
+            if(!idle||_player?.IsSelfSIControlled!=true)return false;
+            _player.KeepSelfSIActive();
+            SetLogoutStartTime(ServerTime.Zero);
+            SendPacket(new LogoutCancelAck());
+            return true;
+        }
         [WorldPacketHandler(ClientOpcodes.LogoutRequest)]
         void HandleLogoutRequest(LogoutRequest logoutRequest)
         {
+            if(PreventSIIdleLogout(logoutRequest.IdleLogout))return;
             Player pl = GetPlayer();
             if (!GetPlayer().GetLootGUID().IsEmpty())
                 GetPlayer().SendLootReleaseAll();
@@ -46,7 +55,7 @@ namespace Game
                 return;
             }
 
-            // instant logout in taverns/cities or on taxi or for admins, gm's, mod's if its enabled in worldserver.conf
+            // instant logout in taverns/cities or on taxi or for admins, gm's, mod's if its enabled in foreverworld.conf
             if (instantLogout)
             {
                 LogoutPlayer(true);
@@ -72,6 +81,14 @@ namespace Game
             // Player have already logged out serverside, too late to cancel
             if (GetPlayer() == null)
                 return;
+
+            // The client can send CANCEL as its countdown reaches zero. Finish an
+            // already expired logout before clearing its timer in this packet handler.
+            if (ShouldLogOut(LoopTime.ServerTime) && m_playerLoading.IsEmpty())
+            {
+                LogoutPlayer(true);
+                return;
+            }
 
             SetLogoutStartTime(ServerTime.Zero);
 

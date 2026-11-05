@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using System;
@@ -1956,7 +1956,9 @@ namespace Framework.Constants
         BarbersChoice = 62,
         JailersTowerBuffs = 63,
         MajorFactionRenown = 64,
-        PersonalTabardVendor = 65
+        PersonalTabardVendor = 65,
+        CharacterBanker = 67,
+        AccountBanker = 68
     }
 
     [Flags]
@@ -2419,7 +2421,8 @@ namespace Framework.Constants
         None = 0x0,
         ActiveForSpec = 0x1,
         StarterBuild = 0x2,
-        SharedActionBars = 0x4
+        SharedActionBars = 0x4,
+        SecondarySpec = 0x8 // Classic 1.60: config of the second spec group (dual spec)
     }
 
     [Flags]

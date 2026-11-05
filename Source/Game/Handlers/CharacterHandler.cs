@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Collections;
@@ -23,6 +23,18 @@ namespace Game
 {
     public partial class WorldSession
     {
+        [WorldPacketHandler(ClientOpcodes.SetForeverExperiencePreset, Status = SessionStatus.Authed)]
+        void HandleSetForeverExperiencePreset(SetForeverExperiencePreset packet)
+        {
+            SetClassicExperiencePreset(packet.Classic);
+        }
+
+        [WorldPacketHandler(ClientOpcodes.SelectForeverExperiencePreset, Status = SessionStatus.Authed)]
+        void HandleSelectForeverExperiencePreset(SelectForeverExperiencePreset packet)
+        {
+            SetClassicExperiencePreset(packet.Classic);
+        }
+
         [WorldPacketHandler(ClientOpcodes.EnumCharacters, Status = SessionStatus.Authed)]
         void HandleCharEnum(EnumCharacters charEnum)
         {
@@ -52,6 +64,7 @@ namespace Game
             charResult.Success = true;
             charResult.IsDeletedCharacters = holder.IsDeletedCharacters();
             charResult.DisabledClassesMask = WorldConfig.Values[WorldCfg.CharacterCreatingDisabledClassmask].Int32;
+            charResult.ClassicExperiencePreset = IsClassicExperiencePreset();
 
             if (!charResult.IsDeletedCharacters)
                 _legitCharacters.Clear();
@@ -188,12 +201,120 @@ namespace Game
                 charResult.RaceUnlockData.Add(raceUnlock);
             }
 
+            // Classic 1.60: the official server sends every character as a regionwide entry (Realmless set, no realm entries; TC
+            // sniff 70235). Only that entry has money; the character select tooltip shows it with the two primary professions.
+            List<EnumCharactersResult.CharacterInfo> realmCharacters = new();
+            if (!charResult.IsDeletedCharacters && !charResult.Characters.Empty())
+            {
+                string guids = string.Join(",", charResult.Characters.Select(character => character.Guid.GetCounter()));
+
+                Dictionary<long, ulong> money = new();
+                SQLResult moneyResult = DB.Characters.Query($"SELECT guid, money FROM characters WHERE guid IN ({guids})");
+                if (!moneyResult.IsEmpty())
+                {
+                    do
+                        money[moneyResult.Read<long>(0)] = moneyResult.Read<ulong>(1);
+                    while (moneyResult.NextRow());
+                }
+
+                MultiMap<long, uint> professions = new();
+                SQLResult skillResult = DB.Characters.Query($"SELECT guid, skill FROM character_skills WHERE guid IN ({guids})");
+                if (!skillResult.IsEmpty())
+                {
+                    do
+                    {
+                        ushort skill = skillResult.Read<ushort>(1);
+                        SkillLineRecord skillLine = CliDB.SkillLineStorage.LookupByKey((SkillType)skill);
+                        if (skillLine != null && skillLine.CategoryID == SkillCategory.Profession && skillLine.ParentSkillLineID == 0)
+                            professions.Add(skillResult.Read<long>(0), skill);
+                    } while (skillResult.NextRow());
+                }
+
+                foreach (EnumCharactersResult.CharacterInfo character in charResult.Characters)
+                {
+                    long guid = character.Guid.GetCounter();
+                    var characterProfessions = professions[guid];
+                    for (int i = 0; i < characterProfessions.Count && i < 2; ++i)
+                        character.ProfessionIds[i] = characterProfessions[i];
+
+                    EnumCharactersResult.RegionwideCharacterListEntry entry = new(character);
+                    entry.Money = money.GetValueOrDefault(guid);
+                    charResult.RegionwideCharacters.Add(entry);
+                }
+
+                charResult.Realmless = true;
+                realmCharacters = charResult.Characters;
+                charResult.Characters = new();
+            }
+
             SendPacket(charResult);
+
+            if (!realmCharacters.Empty())
+            {
+                RegionwideCharacterRestrictionsData restrictions = new();
+                restrictions.Characters.AddRange(realmCharacters.Select(character => character.Guid));
+                SendPacket(restrictions);
+            }
 
             SendPacket(new RecentAllyDataResponse());
 
             if (!charResult.IsDeletedCharacters)
-                SendPacket(new AccountItemCollectionData());
+                SendPacket(new AccountItemCollectionData(Global.WorldMgr.GetRealm().Build));
+
+            // Classic 1.60: unread mail senders per character (mail icon on the character list). Sent right after the enum the
+            // client ignores it; the official server sends it ~2.6 s later, so Update sends it after 3 s (TC).
+            if (!realmCharacters.Empty() && Framework.Configuration.ConfigMgr.GetDefaultValue("Classic.CharacterListMailData", true))
+                QueueCharacterListMailData(realmCharacters);
+        }
+
+        void QueueCharacterListMailData(List<EnumCharactersResult.CharacterInfo> characters)
+        {
+            string receivers = string.Join(",", characters.Select(character => character.Guid.GetCounter()));
+
+            Dictionary<long, List<(uint Type, string Name)>> senders = new();
+            SQLResult mails = DB.Characters.Query(
+                $"SELECT m.receiver, m.messageType, m.sender, c.name FROM mail m " +
+                $"LEFT JOIN characters c ON m.messageType = {(int)MailMessageType.Normal} AND c.guid = m.sender " +
+                $"WHERE m.receiver IN ({receivers}) AND m.deliver_time <= UNIX_TIMESTAMP() AND (m.checked & {(int)MailCheckFlags.Read}) = 0");
+            if (!mails.IsEmpty())
+            {
+                do
+                {
+                    uint type = 0;
+                    string name = null;
+                    switch ((MailMessageType)mails.Read<byte>(1))
+                    {
+                        case MailMessageType.Normal:
+                            name = mails.Read<string>(3);
+                            break;
+                        case MailMessageType.Auction:
+                            type = 8;
+                            name = "Auction House";
+                            break;
+                        case MailMessageType.Creature:
+                            name = Global.ObjectMgr.GetCreatureTemplate((int)mails.Read<long>(2))?.Name;
+                            break;
+                        case MailMessageType.Gameobject:
+                            name = Global.ObjectMgr.GetGameObjectTemplate((int)mails.Read<long>(2))?.name;
+                            break;
+                    }
+                    if (string.IsNullOrEmpty(name) || name.GetByteCount() > 62)
+                        continue;
+
+                    long receiver = mails.Read<long>(0);
+                    if (!senders.TryGetValue(receiver, out var list))
+                        senders[receiver] = list = new();
+                    if (list.Count < 10 && !list.Contains((type, name)))
+                        list.Add((type, name));
+                } while (mails.NextRow());
+            }
+
+            RegionwideCharacterMailData mailData = new();
+            foreach (EnumCharactersResult.CharacterInfo character in characters)
+                mailData.Characters.Add((character.Guid, senders.GetValueOrDefault(character.Guid.GetCounter()) ?? new()));
+
+            _classicCharacterMailData = mailData;
+            _classicCharacterMailDataTimer = TimeSpan.FromSeconds(3);
         }
 
         [WorldPacketHandler(ClientOpcodes.EnumCharactersDeletedByClient, Status = SessionStatus.Authed)]
@@ -514,8 +635,9 @@ namespace Game
             }
 
             CharacterCreateInfo createInfo = charCreate.CreateInfo;
+            createInfo.Surname=NormalizeCreationSurname(createInfo.Surname);
             PreparedStatement stmt = CharacterDatabase.GetPreparedStatement(CharStatements.SEL_CHECK_NAME);
-            stmt.SetString(0, charCreate.CreateInfo.Name);
+            stmt.SetString(0,Player.FormatFullName(charCreate.CreateInfo.Name,NormalizeCreationSurname(charCreate.CreateInfo.Surname)));
 
             _queryProcessor.AddCallback(DB.Characters.AsyncQuery(stmt).WithChainingCallback((queryCallback, result) =>
             {
@@ -666,7 +788,7 @@ namespace Game
                     }
 
                     // Check name uniqueness in the same step as saving to database
-                    if (Global.CharacterCacheStorage.GetCharacterCacheByName(createInfo.Name) != null)
+                    if (Global.CharacterCacheStorage.GetCharacterCacheByFullName(createInfo.Name,NormalizeCreationSurname(createInfo.Surname)) != null)
                     {
                         SendCharCreate(ResponseCodes.CharCreateNameInUse);
                         return;
@@ -693,14 +815,7 @@ namespace Game
 
                     // Player created, save it now
                     newChar.SaveToDB(loginTransaction, characterTransaction, true);
-                    string surname = NormalizeCreationSurname(createInfo.Surname);
-                    if (!string.IsNullOrEmpty(surname))
-                    {
-                        PreparedStatement surnameStatement = CharacterDatabase.GetPreparedStatement(CharStatements.UPD_CHARACTER_SURNAME);
-                        surnameStatement.SetString(0, surname);
-                        surnameStatement.SetInt64(1, newChar.GetGUID().GetCounter());
-                        characterTransaction.Append(surnameStatement);
-                    }
+                    string surname=NormalizeCreationSurname(createInfo.Surname);
                     createInfo.CharCount += 1;
 
                     stmt = LoginDatabase.GetPreparedStatement(LoginStatements.REP_REALM_CHARACTERS);
@@ -911,6 +1026,7 @@ namespace Game
             }
 
             pCurrChar.SetVirtualPlayerRealm(Global.WorldMgr.GetVirtualRealmAddress());
+            pCurrChar.SetAccountSecured(HasSecuredBackpack());
 
             SendAccountDataTimes(ObjectGuid.Empty, AccountDataTypeMask.GlobalCacheMask);
             SendTutorialsData();
@@ -970,33 +1086,8 @@ namespace Game
             pCurrChar.SendInitialPacketsBeforeAddToMap();
 
             //Show cinematic at the first time that player login
-            if (pCurrChar.GetCinematic() == 0)
-            {
+            if (pCurrChar.GetCinematic() == 0 && pCurrChar.TryPlayIntro())
                 pCurrChar.SetCinematic(1);
-                var playerInfo = Global.ObjectMgr.GetPlayerInfo(pCurrChar.GetRace(), pCurrChar.GetClass());
-                if (playerInfo != null)
-                {
-                    switch (pCurrChar.GetCreateMode())
-                    {
-                        case PlayerCreateMode.Normal:
-                            if (playerInfo.introMovieId.HasValue)
-                                pCurrChar.SendMovieStart(playerInfo.introMovieId.Value);
-                            else if (playerInfo.introSceneId.HasValue)
-                                pCurrChar.GetSceneMgr().PlayScene(playerInfo.introSceneId.Value);
-                            else if (CliDB.ChrClassesStorage.TryGetValue(pCurrChar.GetClass(), out ChrClassesRecord chrClassesRecord) && chrClassesRecord.CinematicSequenceID != 0)
-                                pCurrChar.SendCinematicStart(chrClassesRecord.CinematicSequenceID);
-                            else if (CliDB.ChrRacesStorage.TryGetValue((int)pCurrChar.GetRace(), out ChrRacesRecord chrRacesRecord) && chrRacesRecord.CinematicSequenceID != 0)
-                                pCurrChar.SendCinematicStart(chrRacesRecord.CinematicSequenceID);
-                            break;
-                        case PlayerCreateMode.NPE:
-                            if (playerInfo.introSceneIdNPE.HasValue)
-                                pCurrChar.GetSceneMgr().PlayScene(playerInfo.introSceneIdNPE.Value);
-                            break;
-                        default:
-                            break;
-                    }
-                }
-            }
 
             if (!pCurrChar.GetMap().AddPlayerToMap(pCurrChar))
             {
@@ -1098,14 +1189,14 @@ namespace Game
             if (pCurrChar.HasAtLoginFlag(AtLoginFlags.ResetSpells))
             {
                 pCurrChar.ResetSpells();
-                SendNotification(CypherStrings.ResetSpells);
+                SendNotification(ForeverStrings.ResetSpells);
             }
 
             if (pCurrChar.HasAtLoginFlag(AtLoginFlags.ResetTalents))
             {
                 pCurrChar.ResetTalents(true);
                 pCurrChar.SendTalentsInfoData();              // original talents send already in to SendInitialPacketsBeforeAddToMap, resend reset state
-                SendNotification(CypherStrings.ResetTalents);
+                SendNotification(ForeverStrings.ResetTalents);
             }
 
             bool firstLogin = pCurrChar.HasAtLoginFlag(AtLoginFlags.FirstLogin);
@@ -1116,6 +1207,9 @@ namespace Game
                 PlayerInfo info = Global.ObjectMgr.GetPlayerInfo(pCurrChar.GetRace(), pCurrChar.GetClass());
                 foreach (var spellId in info.castSpells[(int)pCurrChar.GetCreateMode()])
                     pCurrChar.CastSpell(pCurrChar, spellId, new CastSpellExtraArgs(true));
+
+                if (pCurrChar.GetClass() == Class.Warrior)
+                    pCurrChar.InitializeStartingActionButtons(info);
 
                 // start with every map explored
                 if (WorldConfig.Values[WorldCfg.StartAllExplored].Bool)
@@ -1197,7 +1291,7 @@ namespace Game
                 pCurrChar.SetTaxiCheater(true);
 
             if (pCurrChar.IsGameMaster())
-                SendNotification(CypherStrings.GmOn);
+                SendNotification(ForeverStrings.GmOn);
 
             string IP_str = GetRemoteAddress();
             Log.outDebug(LogFilter.Network, 
@@ -1254,7 +1348,7 @@ namespace Game
             // TODO: Do something with this packet
         }
 
-        // Port of the reference SendFeatureSystemStatus (E:\trinitycore_new, Classic 1.60.1). Field names follow the retail order,
+        // Port of the reference SendFeatureSystemStatus (E:\emuforever_new, Classic 1.60.1). Field names follow the retail order,
         // which is not the Classic meaning of every bit: e.g. Classic LfdEnabled / LfrEnabled sit where retail has
         // PlayerIdentityOptionsEnabled / IsPlayerContentTrackingEnabled (C_LFGInfo.CanPlayerUseGroupFinder), and the client starts
         // its clubs from the bit retail calls RedeemForBalanceAvailable.
@@ -1471,7 +1565,7 @@ namespace Game
 
             // Ensure that there is no character with the desired new name
             PreparedStatement stmt = CharacterDatabase.GetPreparedStatement(CharStatements.SEL_CHECK_NAME);
-            stmt.SetString(0, checkCharacterNameAvailability.Name);
+            stmt.SetString(0,Player.FormatFullName(checkCharacterNameAvailability.Name,NormalizeCreationSurname(checkCharacterNameAvailability.Surname)));
 
             var sequenceIndex = checkCharacterNameAvailability.SequenceIndex;
             _queryProcessor.AddCallback(DB.Characters.AsyncQuery(stmt).WithCallback(result =>
@@ -1523,7 +1617,7 @@ namespace Game
             // Ensure that there is no character with the desired new name
             PreparedStatement stmt = CharacterDatabase.GetPreparedStatement(CharStatements.SEL_FREE_NAME);
             stmt.SetInt64(0, request.RenameInfo.Guid.GetCounter());
-            stmt.SetString(1, request.RenameInfo.NewName);
+            stmt.SetString(1,Player.FormatFullName(request.RenameInfo.NewName,Global.CharacterCacheStorage.GetCharacterSurnameByGuid(request.RenameInfo.Guid)));
 
             _queryProcessor.AddCallback(DB.Characters.AsyncQuery(stmt).WithCallback(HandleCharRenameCallBack, request.RenameInfo));
         }
@@ -1768,7 +1862,7 @@ namespace Game
 
             // character with this name already exist
             // @todo: make async
-            ObjectGuid newGuid = Global.CharacterCacheStorage.GetCharacterGuidByName(customizeInfo.CharName);
+            ObjectGuid newGuid = Global.CharacterCacheStorage.GetCharacterCacheByFullName(customizeInfo.CharName,Global.CharacterCacheStorage.GetCharacterSurnameByGuid(customizeInfo.CharGUID))?.Guid ?? ObjectGuid.Empty;
             if (!newGuid.IsEmpty())
             {
                 if (newGuid != customizeInfo.CharGUID)
@@ -2072,7 +2166,7 @@ namespace Game
             }
 
             // character with this name already exist
-            ObjectGuid newGuid = Global.CharacterCacheStorage.GetCharacterGuidByName(factionChangeInfo.Name);
+            ObjectGuid newGuid = Global.CharacterCacheStorage.GetCharacterCacheByFullName(factionChangeInfo.Name,Global.CharacterCacheStorage.GetCharacterSurnameByGuid(factionChangeInfo.Guid))?.Guid ?? ObjectGuid.Empty;
             if (!newGuid.IsEmpty())
             {
                 if (newGuid != factionChangeInfo.Guid)
@@ -2513,15 +2607,7 @@ namespace Game
             if (GetPlayer().m_activePlayerData.XP != 0)
                 return;
 
-            ChrClassesRecord classEntry = CliDB.ChrClassesStorage.LookupByKey(GetPlayer().GetClass());
-            if (classEntry != null)
-            {
-                ChrRacesRecord raceEntry = CliDB.ChrRacesStorage.LookupByKey((int)GetPlayer().GetRace());
-                if (classEntry.CinematicSequenceID != 0)
-                    GetPlayer().SendCinematicStart(classEntry.CinematicSequenceID);
-                else if (raceEntry != null)
-                    GetPlayer().SendCinematicStart(raceEntry.CinematicSequenceID);
-            }
+            GetPlayer().TryPlayIntro();
         }
 
         [WorldPacketHandler(ClientOpcodes.GetUndeleteCharacterCooldownStatus, Status = SessionStatus.Authed)]
@@ -2594,7 +2680,7 @@ namespace Game
                 }
 
                 stmt = CharacterDatabase.GetPreparedStatement(CharStatements.SEL_CHECK_NAME);
-                stmt.SetString(0, undeleteInfo.Name);
+                stmt.SetString(0,Player.FormatFullName(undeleteInfo.Name,Global.CharacterCacheStorage.GetCharacterSurnameByGuid(undeleteInfo.CharacterGuid)));
                 queryCallback.SetNextQuery(DB.Characters.AsyncQuery(stmt));
             }).WithChainingCallback((queryCallback, result) =>
             {
@@ -2828,7 +2914,7 @@ namespace Game
         }
 
         static string NormalizeCreationSurname(string surname) =>
-            surname == null || surname.EnumerateRunes().Count() > 48 ? string.Empty : surname;
+            surname == null || surname.EnumerateRunes().Count() > 48 ? string.Empty : surname.Trim();
 
         void CompleteCommittedCharacterCreation(Player character, string surname, SQLTransaction loginTransaction)
         {
@@ -2839,9 +2925,9 @@ namespace Game
                 {
                     try
                     {
-                        Global.CharacterCacheStorage.AddCharacterCacheEntry(character.GetGUID(), GetAccountId(), character.GetName(),
-                            (byte)character.GetNativeGender(), (byte)character.GetRace(), (byte)character.GetClass(), (byte)character.GetLevel(), false);
-                        Global.CharacterCacheStorage.UpdateCharacterSurname(character.GetGUID(), surname);
+                        Global.CharacterCacheStorage.AddCharacterCacheEntry(character.GetGUID(), GetAccountId(), character.GetFirstName(),
+                            (byte)character.GetNativeGender(), (byte)character.GetRace(), (byte)character.GetClass(), (byte)character.GetLevel(), false,surname);
+
                     }
                     finally { DB.Login.CommitTransaction(loginTransaction); }
                 },
@@ -3041,6 +3127,10 @@ namespace Game
             stmt.SetInt64(0, lowGuid);
             SetQuery(PlayerLoginQueryLoad.Inventory, stmt);
 
+            stmt = CharacterDatabase.GetPreparedStatement(CharStatements.SEL_CHAR_BANK_TAB_SETTINGS);
+            stmt.SetInt64(0, lowGuid);
+            SetQuery(PlayerLoginQueryLoad.BankTabs, stmt);
+
             stmt = CharacterDatabase.GetPreparedStatement(CharStatements.SEL_CHAR_VOID_STORAGE);
             stmt.SetInt64(0, lowGuid);
             SetQuery(PlayerLoginQueryLoad.VoidStorage, stmt);
@@ -3060,6 +3150,10 @@ namespace Game
             stmt = CharacterDatabase.GetPreparedStatement(CharStatements.SEL_CHARACTER_HOMEBIND);
             stmt.SetInt64(0, lowGuid);
             SetQuery(PlayerLoginQueryLoad.HomeBind, stmt);
+
+            stmt = CharacterDatabase.GetPreparedStatement(CharStatements.SEL_CHARACTER_ACTIONS);
+            stmt.SetInt64(0, lowGuid);
+            SetQuery(PlayerLoginQueryLoad.Actions, stmt);
 
             stmt = CharacterDatabase.GetPreparedStatement(CharStatements.SEL_CHARACTER_SPELLCOOLDOWNS);
             stmt.SetInt64(0, lowGuid);
@@ -3252,6 +3346,8 @@ namespace Game
         PetSlots,
         TraitEntries,
         TraitConfigs,
+        BankTabs,
+        Actions,
         Max
     }
 

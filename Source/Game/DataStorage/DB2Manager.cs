@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -73,7 +73,7 @@ namespace Game.DataStorage
 
             foreach (var uiDisplay in ChrClassUIDisplayStorage.Values)
             {
-                Cypher.Assert(uiDisplay.ChrClassesID < Class.Max);
+                Forever.Assert(uiDisplay.ChrClassesID < Class.Max);
                 _uiDisplayByClass[(int)uiDisplay.ChrClassesID] = uiDisplay;
             }
 
@@ -191,6 +191,9 @@ namespace Game.DataStorage
                 _chrSpecializationsByIndex[(int)storageIndex][chrSpec.OrderIndex] = chrSpec;
             }
 
+            foreach (PlayerExpectedStatRecord playerExpectedStat in PlayerExpectedStatStorage.Values)
+                _playerExpectedStats[((Class)playerExpectedStat.ClassID, playerExpectedStat.Level)] = playerExpectedStat;
+
             foreach (ConditionalContentTuningRecord conditionalContentTuning in ConditionalContentTuningStorage.Values)
                 _conditionalContentTuning.Add(conditionalContentTuning.ParentContentTuningID, conditionalContentTuning);
 
@@ -298,6 +301,8 @@ namespace Game.DataStorage
                 _mapDifficulties[entry.MapID][entry.DifficultyID] = entry;
             }
 
+            InitializeWinterWarsongDifficulty();
+
             List<MapDifficultyXConditionRecord> mapDifficultyConditions = new();
             foreach (var mapDifficultyCondition in MapDifficultyXConditionStorage.Values)
                 mapDifficultyConditions.Add(mapDifficultyCondition);
@@ -340,7 +345,7 @@ namespace Game.DataStorage
 
             foreach (var namesProfanity in NamesProfanityStorage.Values)
             {
-                Cypher.Assert(namesProfanity.Language < Locale.Total || namesProfanity.Language == Locale.AllLanguages);
+                Forever.Assert(namesProfanity.Language < Locale.Total || namesProfanity.Language == Locale.AllLanguages);
                 if (namesProfanity.Language != Locale.AllLanguages)
                     _nameValidators[(int)namesProfanity.Language].Add(namesProfanity.Name);
                 else
@@ -358,7 +363,7 @@ namespace Game.DataStorage
 
             foreach (var namesReserved in NamesReservedLocaleStorage.Values)
             {
-                Cypher.Assert(namesReserved.LocaleMask.HasAnyFlag(LocaleMask.Total));
+                Forever.Assert(namesReserved.LocaleMask.HasAnyFlag(LocaleMask.Total));
                 for (Locale i = 0; i < Locale.Total; i++)
                 {
                     if (LocaleMask.None.HasLocale(i))
@@ -382,7 +387,7 @@ namespace Game.DataStorage
 
             foreach (PowerTypeRecord powerType in PowerTypeStorage.Values)
             {
-                // 1.60.1 ships extra power types (e.g. HAPPINESS = 27); skip unknown ones like TrinityCore does
+                // Reject malformed or duplicate definitions; Forever happiness is power 27.
                 if (powerType.PowerTypeEnum < 0 || powerType.PowerTypeEnum >= PowerType.Max || _powerTypes.ContainsKey(powerType.PowerTypeEnum))
                 {
                     Log.outError(LogFilter.ServerLoading, $"PowerType {powerType.Id} has invalid or duplicate PowerTypeEnum {(int)powerType.PowerTypeEnum} ({powerType.NameGlobalStringTag}), skipped.");
@@ -395,7 +400,7 @@ namespace Game.DataStorage
 
             foreach (PvpDifficultyRecord record in PvpDifficultyStorage.Values)
             {
-                Cypher.Assert(record.BracketId < BattlegroundBracketId.Max,
+                Forever.Assert(record.BracketId < BattlegroundBracketId.Max,
                     $"PvpDifficulty bracket {record.BracketId} exceeded max allowed value {BattlegroundBracketId.Max}");
             }
 
@@ -469,9 +474,9 @@ namespace Game.DataStorage
 
             foreach (TalentRecord talentInfo in TalentStorage.Values)
             {
-                Cypher.Assert(talentInfo.ClassID < Class.Max);
-                Cypher.Assert(talentInfo.TierID < PlayerConst.MaxTalentTiers);
-                Cypher.Assert(talentInfo.ColumnIndex < PlayerConst.MaxTalentColumns);
+                Forever.Assert(talentInfo.ClassID < Class.Max);
+                Forever.Assert(talentInfo.TierID < PlayerConst.MaxTalentTiers);
+                Forever.Assert(talentInfo.ColumnIndex < PlayerConst.MaxTalentColumns);
                 _talentsByPosition[(int)talentInfo.ClassID][talentInfo.TierID][talentInfo.ColumnIndex].Add(talentInfo);
             }
 
@@ -542,7 +547,7 @@ namespace Game.DataStorage
                 UiMapRecord uiMap = UiMapStorage.LookupByKey(uiMapAssignment.UiMapID);
                 if (uiMap != null)
                 {
-                    Cypher.Assert(uiMap.System < UiMapSystem.Max, $"UiMapSystem.Max must be at least {uiMap.System + 1}");
+                    Forever.Assert(uiMap.System < UiMapSystem.Max, $"UiMapSystem.Max must be at least {uiMap.System + 1}");
                     if (uiMapAssignment.MapID >= 0)
                         _uiMapAssignmentByMap[(int)uiMap.System].Add(uiMapAssignment.MapID, uiMapAssignment);
                     if (uiMapAssignment.AreaID != 0)
@@ -662,19 +667,20 @@ namespace Game.DataStorage
                 uint tableHash = result.Read<uint>(2);
                 int recordId = result.Read<int>(3);
                 HotfixRecord.Status status = (HotfixRecord.Status)result.Read<byte>(4);
+                BitSet recordLocales = new(availableDb2Locales);
                 if (status == HotfixRecord.Status.Valid && !_storage.ContainsKey(tableHash))
                 {
                     var key = (tableHash, recordId);
                     for (int locale = 0; locale < (int)Locale.Total; ++locale)
                     {
-                        if (!availableDb2Locales[locale])
+                        if (!recordLocales[locale])
                             continue;
 
                         if (!_hotfixBlob[locale].ContainsKey(key))
-                            availableDb2Locales[locale] = false;
+                            recordLocales[locale] = false;
                     }
 
-                    if (!availableDb2Locales.Any())
+                    if (!recordLocales.Any())
                     {
                         Log.outError(LogFilter.Sql, 
                             $"Table `hotfix_data` references unknown DB2 store " +
@@ -690,7 +696,7 @@ namespace Game.DataStorage
                 hotfixRecord.ID.PushID = id;
                 hotfixRecord.ID.UniqueID = uniqueId;
                 hotfixRecord.HotfixStatus = status;
-                hotfixRecord.AvailableLocalesMask = (uint)availableDb2Locales.ToBlockRange()[0];//Ulgy i know
+                hotfixRecord.AvailableLocalesMask = (uint)recordLocales.ToBlockRange()[0];
 
                 if (!_hotfixData.ContainsKey(id))
                     _hotfixData[id] = new();
@@ -860,14 +866,14 @@ namespace Game.DataStorage
 
         public byte[] GetHotfixBlobData(uint tableHash, int recordId, Locale locale)
         {
-            Cypher.Assert(SharedConst.IsValidLocale(locale), $"Locale {locale} is invalid locale");
+            Forever.Assert(SharedConst.IsValidLocale(locale), $"Locale {locale} is invalid locale");
 
             return _hotfixBlob[(int)locale].LookupByKey((tableHash, recordId));
         }
 
         public IReadOnlyList<HotfixOptionalData> GetHotfixOptionalData(uint tableHash, int recordId, Locale locale)
         {
-            Cypher.Assert(SharedConst.IsValidLocale(locale), $"Locale {locale} is invalid locale");
+            Forever.Assert(SharedConst.IsValidLocale(locale), $"Locale {locale} is invalid locale");
 
             return _hotfixOptionalData[(int)locale][(tableHash, recordId)];
         }
@@ -931,7 +937,7 @@ namespace Game.DataStorage
 
         public ChrClassUIDisplayRecord GetUiDisplayForClass(Class unitClass)
         {
-            Cypher.Assert(unitClass < Class.Max);
+            Forever.Assert(unitClass < Class.Max);
             return _uiDisplayByClass[(int)unitClass];
         }
 
@@ -999,6 +1005,15 @@ namespace Game.DataStorage
             return raceEntry.Name[Locale.enUS];
         }
 
+        // 1.60.1: PlayerExpectedStat.db2 row of the class and level; levels above the table use its highest row
+        public PlayerExpectedStatRecord GetPlayerExpectedStat(Class class_, int level)
+        {
+            for (int lvl = Math.Min(level, SharedConst.StrongMaxLevel); lvl > 0; --lvl)
+                if (_playerExpectedStats.TryGetValue((class_, lvl), out PlayerExpectedStatRecord record))
+                    return record;
+            return null;
+        }
+
         public ChrSpecializationRecord GetChrSpecializationByIndex(Class class_, int index)
         {
             var classSet = _chrSpecializationsByIndex.LookupByIndex((int)class_);
@@ -1014,7 +1029,8 @@ namespace Game.DataStorage
 
         public ChrSpecializationRecord GetDefaultChrSpecializationForClass(Class class_)
         {
-            return GetChrSpecializationByIndex(class_, PlayerConst.InitialSpecializationIndex);
+            // Classic 1.60 classes have a single specialization (index 0) holding every talent tree and no retail initial spec
+            return GetChrSpecializationByIndex(class_, PlayerConst.InitialSpecializationIndex) ?? GetChrSpecializationByIndex(class_, 0);
         }
 
         public int GetRedirectedContentTuningId(int contentTuningId, uint redirectFlag)
@@ -1512,6 +1528,15 @@ namespace Game.DataStorage
             return mapDifficulty;
         }
 
+        internal void InitializeWinterWarsongDifficulty()
+        {
+            if(!_mapDifficulties.TryGetValue(489,out var classic))return;
+            if(!_mapDifficulties.TryGetValue(2996,out var winter))
+                _mapDifficulties[2996]=winter=new();
+            foreach(var pair in classic)
+                if(!winter.ContainsKey(pair.Key))winter[pair.Key]=pair.Value.ForMap(2996);
+        }
+
         public MapDifficultyRecord GetDownscaledMapDifficultyData(int mapId, ref Difficulty difficulty)
         {
             DifficultyRecord diffEntry = DifficultyStorage.LookupByKey(difficulty);
@@ -1562,7 +1587,7 @@ namespace Game.DataStorage
 
         public string GetNameGenEntry(Race race, Gender gender, byte nameType = 0)
         {
-            Cypher.Assert(gender < Gender.None);
+            Forever.Assert(gender < Gender.None);
             var listNameGen = _nameGenData.LookupByKey(race);
             if (listNameGen == null)
                 return "";
@@ -1619,6 +1644,7 @@ namespace Game.DataStorage
 
         public PvpDifficultyRecord GetBattlegroundBracketByLevel(int mapid, int level)
         {
+            if(mapid==2996)mapid=489;
             PvpDifficultyRecord maxEntry = null;              // used for level > max listed level case
             foreach (var entry in PvpDifficultyStorage.Values)
             {
@@ -1640,6 +1666,7 @@ namespace Game.DataStorage
 
         public PvpDifficultyRecord GetBattlegroundBracketById(int mapid, BattlegroundBracketId id)
         {
+            if(mapid==2996)mapid=489;
             foreach (var entry in PvpDifficultyStorage.Values)
             {
                 if (entry.MapID == mapid && entry.BracketId == id)
@@ -2171,7 +2198,8 @@ namespace Game.DataStorage
 
         public void AddDB2<TKey, TRecord>(uint tableHash, DB6Storage<TKey, TRecord> store) where TRecord : new() where TKey : struct
         {
-            _storage[tableHash] = store;
+            lock (_storage)
+                _storage[tableHash] = store;
         }
 
         delegate bool AllowedHotfixOptionalData(byte[] data);
@@ -2193,6 +2221,7 @@ namespace Game.DataStorage
         MultiMap<(Race, Gender), ChrCustomizationOptionRecord> _chrCustomizationOptionsByRaceAndGender = new();
         Dictionary<int, MultiMap<int, int>> _chrCustomizationRequiredChoices = new();
         ChrSpecializationRecord[][] _chrSpecializationsByIndex = new ChrSpecializationRecord[(int)Class.Max + 1][];
+        Dictionary<(Class, int), PlayerExpectedStatRecord> _playerExpectedStats = new();
         MultiMap<int, ConditionalContentTuningRecord> _conditionalContentTuning = new();
         MultiMap<int, CurrencyContainerRecord> _currencyContainers = new();
         List<(int, int)> _contentTuningLabels = new();

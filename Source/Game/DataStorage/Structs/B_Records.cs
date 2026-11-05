@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -6,6 +6,20 @@ using System;
 
 namespace Game.DataStorage
 {
+    public sealed class BankTabRecord
+    {
+        public int Id;
+        public ulong Cost;
+        public byte BankType;
+        public sbyte OrderIndex;
+        public int PlayerConditionID;
+        public int PurchasePromptTitle;
+        public int PurchasePromptBody;
+        public int PurchasePromptConfirmation;
+        public int TabCleanupConfirmation;
+        public int TabNameEditBoxHeader;
+    }
+
     public sealed class BankBagSlotPricesRecord
     {
         public int Id;
@@ -75,7 +89,7 @@ namespace Game.DataStorage
         public int SummonSpellID;
         public int IconFileDataID;
         public byte PetTypeEnum;
-        private int _flags;
+        private int _flags = default;
         public sbyte SourceTypeEnum;
         public int CardUIModelSceneID;
         public int LoadoutUIModelSceneID;
@@ -123,7 +137,7 @@ namespace Game.DataStorage
         public sbyte GroupsAllowed;
         public sbyte MaxGroupSize;
         public short HolidayWorldState;
-        private int _flags;
+        private int _flags = default;
         public int IconFileDataID;
         public int RequiredPlayerConditionID;
 
@@ -170,7 +184,6 @@ namespace Game.DataStorage
         public ushort[] EmoteID = new ushort[3];
         public ushort[] EmoteDelay = new ushort[3];
 
-        static int MAX_BROADCAST_TEXT_EMOTES = 3;
 
     }
 }

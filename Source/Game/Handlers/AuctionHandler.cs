@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -102,7 +102,9 @@ namespace Game
         }
 
         [WorldPacketHandler(ClientOpcodes.AuctionConfirmCommoditiesPurchase)]
-        void HandleAuctionConfirmCommoditiesPurchase(AuctionConfirmCommoditiesPurchase confirmCommoditiesPurchase)
+        void HandleAuctionConfirmCommoditiesPurchase(AuctionConfirmCommoditiesPurchase packet) => ConfirmCommoditiesPurchase(packet);
+
+        void ConfirmCommoditiesPurchase(AuctionConfirmCommoditiesPurchase confirmCommoditiesPurchase, Action<bool> completed = null)
         {
             AuctionThrottleResult throttle = Global.AuctionHouseMgr.CheckThrottle(_player, confirmCommoditiesPurchase.TaintedBy.HasValue, AuctionCommand.PlaceBid);
             if (throttle.Throttled)
@@ -120,6 +122,7 @@ namespace Game
                 var buyerGuid = _player.GetGUID();
                 AddTransactionCallback(DB.Characters.AsyncCommitTransaction(trans)).AfterComplete(success =>
                 {
+                    completed?.Invoke(success);
                     if (GetPlayer() != null && GetPlayer().GetGUID() == buyerGuid)
                     {
                         if (success)
@@ -288,7 +291,9 @@ namespace Game
 
         // this function is called when client bids or buys out auction
         [WorldPacketHandler(ClientOpcodes.AuctionPlaceBid)]
-        void HandleAuctionPlaceBid(AuctionPlaceBid placeBid)
+        void HandleAuctionPlaceBid(AuctionPlaceBid packet) => PlaceAuctionBid(packet);
+
+        void PlaceAuctionBid(AuctionPlaceBid placeBid, Action<bool> completed = null)
         {
             AuctionThrottleResult throttle = Global.AuctionHouseMgr.CheckThrottle(_player, placeBid.TaintedBy.HasValue, AuctionCommand.PlaceBid);
             if (throttle.Throttled)
@@ -417,6 +422,7 @@ namespace Game
             var bidderGuid = player.GetGUID();
             AddTransactionCallback(DB.Characters.AsyncCommitTransaction(trans)).AfterComplete(success =>
             {
+                completed?.Invoke(success);
                 if (GetPlayer() != null && GetPlayer().GetGUID() == bidderGuid)
                 {
                     if (success)
@@ -906,7 +912,7 @@ namespace Game
         {
             if (GetPlayer().GetLevel() < WorldConfig.Values[WorldCfg.AuctionLevelReq].Int32)
             {
-                SendNotification(Global.ObjectMgr.GetCypherString(CypherStrings.AuctionReq), WorldConfig.Values[WorldCfg.AuctionLevelReq].Int32);
+                SendNotification(Global.ObjectMgr.GetForeverString(ForeverStrings.AuctionReq), WorldConfig.Values[WorldCfg.AuctionLevelReq].Int32);
                 return;
             }
 

@@ -1,7 +1,8 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
+using System;
 
 namespace Game.DataStorage
 {
@@ -9,7 +10,7 @@ namespace Game.DataStorage
     {
         public int Id;
         public string EmoteSlashCommand;
-        private short _animId;
+        private short _animId = default;
         public uint EmoteFlags;
         public int EmoteSpecProc;
         public uint EmoteSpecProcParam;
@@ -19,7 +20,7 @@ namespace Game.DataStorage
         private int[] _raceMask = new int[2];
 
         #region Properties
-        public RaceMask RaceMask => (RaceMask)_raceMask[0];
+        public RaceMask RaceMask => _raceMask.ToRaceMask();
         public Anim AnimId => (Anim)_animId;
         #endregion
     }
@@ -28,7 +29,7 @@ namespace Game.DataStorage
     {
         public int Id;
         public string Name;
-        private ushort _emoteId;
+        private ushort _emoteId = default;
 
         #region Properties
         public Emote EmoteId => (Emote)_emoteId;
@@ -38,9 +39,9 @@ namespace Game.DataStorage
     public sealed class EmotesTextSoundRecord
     {
         public int Id;
-        private byte _raceId;
-        private byte _classId;
-        private byte _sexId;
+        private byte _raceId = default;
+        private byte _classId = default;
+        private byte _sexId = default;
         public int SoundId;
         public int EmotesTextId;
 
@@ -54,7 +55,7 @@ namespace Game.DataStorage
     public sealed class ExpectedStatRecord
     {
         public int Id;
-        private int _expansionID;
+        private int _expansionID = default;
         public float CreatureHealth;
         public float PlayerHealth;
         public float CreatureAutoAttackDps;

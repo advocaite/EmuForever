@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -376,7 +376,8 @@ namespace Game.Entities
         public static int SpellCriticalHealingBonus(Unit caster, SpellInfo spellProto, int damage, Unit victim)
         {
             // Calculate critical bonus
-            int crit_bonus = damage;
+            // Classic 1.60 (vanilla): heal crits heal for 150% (retail 200%); talents add to the 50% bonus (TC-forever)
+            int crit_bonus = damage / 2;
 
             // adds additional damage to critBonus (from talents)
             if (caster != null)
@@ -1198,7 +1199,9 @@ namespace Game.Entities
 
         public void EnergizeBySpell(Unit victim, SpellInfo spellInfo, int damage, PowerType powerType)
         {
-            if (victim is Player victimPlayer)
+            // Classic 1.60 (vanilla): only paying mana starts the five second rule (Spell.TakePower); receiving it does not (Judgement of
+            // Wisdom, Spiritual Attunement, Life Tap...), or a gain every few seconds would keep the window open (TC-forever)
+            if (powerType != PowerType.Mana && victim is Player victimPlayer)
             {
                 var powerTypeEntry = Global.DB2Mgr.GetPowerTypeEntry(powerType);
                 if (powerTypeEntry != null)
@@ -1613,7 +1616,7 @@ namespace Game.Entities
             else if (healInfo != null)
                 spellInfo = healInfo.GetSpellInfo();
 
-            if (typeMaskActor != null && actor != null && !(spellInfo != null && spellInfo.HasAttribute(SpellAttr3.SuppressCasterProcs)))
+            if (typeMaskActor != ProcFlagsInit.None && actor != null && !(spellInfo != null && spellInfo.HasAttribute(SpellAttr3.SuppressCasterProcs)))
                 actor.ProcSkillsAndReactives(false, actionTarget, typeMaskActor, hitMask, attType);
 
             if (typeMaskActionTarget != ProcFlagsInit.None && actionTarget != null
@@ -1640,8 +1643,8 @@ namespace Game.Entities
                 if (IsPlayer() && !procTarget.IsPlayer() &&
                     !(procTarget.IsTotem() && procTarget.ToTotem().GetOwner().IsPlayer()) && !procTarget.IsPet())
                 {
-                    // On melee based hit/miss/resist need update skill (for victim and attacker)
-                    if ((hitMask & (ProcFlagsHit.Normal | ProcFlagsHit.Miss | ProcFlagsHit.FullResist)) != 0)
+                    // On melee based hit/crit/miss/resist need update skill (for victim and attacker); Classic 1.60: crits train it too (TC-forever)
+                    if ((hitMask & (ProcFlagsHit.Normal | ProcFlagsHit.Critical | ProcFlagsHit.Miss | ProcFlagsHit.FullResist)) != 0)
                     {
                         if (!procTarget.IsPlayer() && !procTarget.IsCritter())
                             ToPlayer().UpdateCombatSkills(procTarget, attType, isVictim);
@@ -1722,7 +1725,7 @@ namespace Game.Entities
             {
                 foreach (AuraApplication aurApp in procAuras)
                 {
-                    Cypher.Assert(aurApp.GetTarget() == this);
+                    Forever.Assert(aurApp.GetTarget() == this);
                     processAuraApplication(aurApp);
                 }
             }
@@ -1804,7 +1807,7 @@ namespace Game.Entities
                 ++m_procDeep;
             else
             {
-                Cypher.Assert(m_procDeep != 0);
+                Forever.Assert(m_procDeep != 0);
                 --m_procDeep;
             }
         }
@@ -1820,7 +1823,7 @@ namespace Game.Entities
 
         public ushort GetMaxSkillValueForLevel(Unit target = null)
         {
-            return (ushort)(target != null ? GetLevelForTarget(target) : GetLevel() * 5);
+            return (ushort)((target != null ? GetLevelForTarget(target) : GetLevel()) * 5);
         }
 
         public Spell GetCurrentSpell(CurrentSpellTypes spellType)
@@ -1830,7 +1833,7 @@ namespace Game.Entities
 
         public void SetCurrentCastSpell(Spell pSpell)
         {
-            Cypher.Assert(pSpell != null);                                         // NULL may be never passed here, use InterruptSpell or InterruptNonMeleeSpells
+            Forever.Assert(pSpell != null);                                         // NULL may be never passed here, use InterruptSpell or InterruptNonMeleeSpells
 
             CurrentSpellTypes CSpellType = pSpell.GetCurrentContainer();
 
@@ -1943,7 +1946,9 @@ namespace Game.Entities
         public static int SpellCriticalDamageBonus(Unit caster, SpellInfo spellProto, int damage, Unit victim = null)
         {
             // Calculate critical bonus
-            int crit_bonus = damage * 2;
+            // Classic 1.60 (vanilla): spell crits do 150% damage (retail 200%); talents such as Ice Shards or Ruin add to the 50% bonus
+            // below (TC-forever). Melee and ranged abilities do not come here (CalculateSpellDamageTaken), they keep 200%.
+            int crit_bonus = damage + damage / 2;
             float crit_mod = 0.0f;
 
             if (caster != null)
@@ -1953,7 +1958,8 @@ namespace Game.Entities
                 if (crit_bonus != 0)
                     MathFunctions.AddPct(ref crit_bonus, (int)crit_mod);
 
-                MathFunctions.AddPct(ref crit_bonus, victim.GetTotalAuraModifier(AuraType.ModCriticalDamageTakenFromCaster, aurEff =>
+                if (victim != null)
+                    MathFunctions.AddPct(ref crit_bonus, victim.GetTotalAuraModifier(AuraType.ModCriticalDamageTakenFromCaster, aurEff =>
                 {
                     return aurEff.GetCasterGUID() == caster.GetGUID();
                 }));
@@ -2666,7 +2672,7 @@ namespace Game.Entities
 
         public void InterruptSpell(CurrentSpellTypes spellType, bool withDelayed = true, bool withInstant = true)
         {
-            Cypher.Assert(spellType < CurrentSpellTypes.Max);
+            Forever.Assert(spellType < CurrentSpellTypes.Max);
 
             Log.outDebug(LogFilter.Unit, $"Interrupt spell for unit {GetEntry()}");
             Spell spell = m_currentSpells.LookupByKey(spellType);
@@ -3406,7 +3412,7 @@ namespace Game.Entities
         {
             Aura aura = keyValuePair.Value;
 
-            Cypher.Assert(!aura.IsRemoved());
+            Forever.Assert(!aura.IsRemoved());
 
             m_ownedAuras.Remove(keyValuePair);
             m_removedAuras.Add(aura);
@@ -3435,7 +3441,7 @@ namespace Game.Entities
             if (auraToRemove.IsRemoved())
                 return;
 
-            Cypher.Assert(auraToRemove.GetOwner() == this);
+            Forever.Assert(auraToRemove.GetOwner() == this);
 
             if (removeMode == AuraRemoveMode.None)
             {
@@ -3457,7 +3463,7 @@ namespace Game.Entities
                 }
             }
 
-            Cypher.Assert(false);
+            Forever.Assert(false);
         }
 
         public void RemoveAurasDueToSpell(int spellId, ObjectGuid casterGUID = default, uint reqEffMask = 0, AuraRemoveMode removeMode = AuraRemoveMode.Default)
@@ -3651,7 +3657,7 @@ namespace Game.Entities
             {
                 Aura aura = eff.GetBase();
                 AuraApplication aurApp = aura.GetApplicationOfTarget(GetGUID());
-                Cypher.Assert(aurApp != null);
+                Forever.Assert(aurApp != null);
 
                 if (check(aurApp))
                 {
@@ -3908,16 +3914,16 @@ namespace Game.Entities
                 return;
 
             AuraApplication aurApp = pair.Value;
-            Cypher.Assert(aurApp != null);
-            Cypher.Assert(!aurApp.HasRemoveMode());
-            Cypher.Assert(aurApp.GetTarget() == this);
+            Forever.Assert(aurApp != null);
+            Forever.Assert(!aurApp.HasRemoveMode());
+            Forever.Assert(aurApp.GetTarget() == this);
 
             aurApp.SetRemoveMode(removeMode);
             Aura aura = aurApp.GetBase();
             Log.outDebug(LogFilter.Spells, $"Aura {aura.GetId()} now is remove mode {removeMode}");
 
             // dead loop is killing the server probably
-            Cypher.Assert(m_removedAurasCount < 0xFFFFFFFF);
+            Forever.Assert(m_removedAurasCount < 0xFFFFFFFF);
 
             ++m_removedAurasCount;
 
@@ -3957,7 +3963,7 @@ namespace Game.Entities
             }
 
             // all effect mustn't be applied
-            Cypher.Assert(aurApp.GetEffectMask() == 0);
+            Forever.Assert(aurApp.GetEffectMask() == 0);
 
             // Remove totem at next update if totem loses its aura
             if (aurApp.GetRemoveMode() == AuraRemoveMode.Expire && IsTypeId(TypeId.Unit) && IsTotem())
@@ -3997,7 +4003,7 @@ namespace Game.Entities
         public void _UnapplyAura(AuraApplication aurApp, AuraRemoveMode removeMode)
         {
             // aura can be removed from unit only if it's applied on it, shouldn't happen
-            Cypher.Assert(aurApp.GetBase().GetApplicationOfTarget(GetGUID()) == aurApp);
+            Forever.Assert(aurApp.GetBase().GetApplicationOfTarget(GetGUID()) == aurApp);
 
             var spellId = aurApp.GetBase().GetId();
 
@@ -4009,7 +4015,7 @@ namespace Game.Entities
                     return;
                 }
             }
-            Cypher.Assert(false);
+            Forever.Assert(false);
         }
 
         public AuraEffect GetAuraEffect(int spellId, int effIndex, ObjectGuid casterGUID = default)
@@ -4183,10 +4189,10 @@ namespace Game.Entities
         
         public void _ApplyAuraEffect(Aura aura, int effIndex)
         {
-            Cypher.Assert(aura != null);
-            Cypher.Assert(aura.HasEffect(effIndex));
+            Forever.Assert(aura != null);
+            Forever.Assert(aura.HasEffect(effIndex));
             AuraApplication aurApp = aura.GetApplicationOfTarget(GetGUID());
-            Cypher.Assert(aurApp != null);
+            Forever.Assert(aurApp != null);
             if (aurApp.GetEffectMask() == 0)
                 _ApplyAura(aurApp, 1u << effIndex);
             else
@@ -4253,7 +4259,7 @@ namespace Game.Entities
 
         public void _AddAura(UnitAura aura, Unit caster)
         {
-            Cypher.Assert(!m_cleanupDone);
+            Forever.Assert(!m_cleanupDone);
             m_ownedAuras.Add(aura.GetId(), aura);
 
             _RemoveNoStackAurasDueToAura(aura, true);
@@ -4268,7 +4274,7 @@ namespace Game.Entities
                 // @HACK: Player is not in world during loading auras.
                 //Single target auras are not saved or loaded from database
                 //but may be created as a result of aura links (player mounts with passengers)
-                Cypher.Assert((IsInWorld && !IsDuringRemoveFromWorld()) || aura.GetCasterGUID() == GetGUID());
+                Forever.Assert((IsInWorld && !IsDuringRemoveFromWorld()) || aura.GetCasterGUID() == GetGUID());
 
                 // register single target aura
                 caster.m_scAuras.Add(aura);
@@ -4290,7 +4296,7 @@ namespace Game.Entities
 
         public Aura _TryStackingOrRefreshingExistingAura(AuraCreateInfo createInfo)
         {
-            Cypher.Assert(!createInfo.CasterGUID.IsEmpty() || createInfo.Caster != null);
+            Forever.Assert(!createInfo.CasterGUID.IsEmpty() || createInfo.Caster != null);
 
             // Check if these can stack anyway
             if (createInfo.CasterGUID.IsEmpty() && !createInfo.GetSpellInfo().IsStackableOnOneSlotWithDifferentCasters())

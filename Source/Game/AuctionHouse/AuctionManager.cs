@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -230,8 +230,8 @@ namespace Game
 
         public void AddAItem(Item item)
         {
-            Cypher.Assert(item != null);
-            Cypher.Assert(!_itemsByGuid.ContainsKey(item.GetGUID()));
+            Forever.Assert(item != null);
+            Forever.Assert(!_itemsByGuid.ContainsKey(item.GetGUID()));
             _itemsByGuid[item.GetGUID()] = item;
         }
 
@@ -506,6 +506,12 @@ namespace Game
         {
             return _itemsByAuctionId.LookupByKey(auctionId);
         }
+
+        // Read-only candidate discovery. SI purchases still use the ordinary quote/
+        // buyout handlers, which revalidate ownership, price, funds and delivery.
+        public IEnumerable<AuctionPosting> GetBuyoutAuctionsFor(Player buyer) => _itemsByAuctionId.Values.Where(auction =>
+            auction.EndTime > LoopTime.ServerTime && auction.BuyoutPrice > 0 && auction.Item != null &&
+            auction.Owner != buyer.GetGUID() && auction.OwnerAccount != buyer.GetSession().GetAccountGUID());
 
         public void AddAuction(SQLTransaction trans, AuctionPosting auction)
         {
@@ -833,7 +839,7 @@ namespace Game
             if (!_buckets.TryGetValue(AuctionsBucketKey.ForCommodity(itemTemplate), out AuctionsBucketData bucket))
                 return Enumerable.Empty<AuctionPosting>();
 
-            return bucket.Auctions.Where(auction => auction.IsCommodity()
+            return bucket.Auctions.Where(auction => auction.IsCommodity() && auction.EndTime > LoopTime.ServerTime
                 && auction.Owner != player.GetGUID() && auction.OwnerAccount != player.GetSession().GetAccountGUID());
         }
 
@@ -951,7 +957,7 @@ namespace Game
                 {
                     int bidderAccId = player.GetSession().GetAccountId();
                     if (!Global.CharacterCacheStorage.GetCharacterNameByGuid(auction.Owner, out string ownerName))
-                        ownerName = Global.ObjectMgr.GetCypherString(CypherStrings.Unknown);
+                        ownerName = Global.ObjectMgr.GetForeverString(ForeverStrings.Unknown);
 
                     Log.outCommand(bidderAccId,
                         $"GM {player.GetName()} (Account: {bidderAccId}) bought commodity in auction: " +
@@ -1059,13 +1065,13 @@ namespace Game
                 bidderAccId = Global.CharacterCacheStorage.GetCharacterAccountIdByGuid(auction.Bidder);
 
                 if (logGmTrade && !Global.CharacterCacheStorage.GetCharacterNameByGuid(auction.Bidder, out bidderName))
-                    bidderName = Global.ObjectMgr.GetCypherString(CypherStrings.Unknown);
+                    bidderName = Global.ObjectMgr.GetForeverString(ForeverStrings.Unknown);
             }
 
             if (logGmTrade)
             {
                 if (!Global.CharacterCacheStorage.GetCharacterNameByGuid(auction.Owner, out string ownerName))
-                    ownerName = Global.ObjectMgr.GetCypherString(CypherStrings.Unknown);
+                    ownerName = Global.ObjectMgr.GetForeverString(ForeverStrings.Unknown);
 
                 int ownerAccId = Global.CharacterCacheStorage.GetCharacterAccountIdByGuid(auction.Owner);
 

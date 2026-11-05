@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Configuration;
@@ -130,8 +130,10 @@ namespace Framework.Database
 
         public bool DirectExecute(PreparedStatement stmt, string serializingLock) => ExecuteStatement(stmt,serializingLock,false,"account","account_id_allocator");
         public bool DirectExecuteWithAccountId(PreparedStatement stmt, string accounts = "account", string sequence = "account_id_allocator", string lockName = "game-account-create") =>
-            ExecuteStatement(stmt,lockName,true,accounts,sequence);
-        bool ExecuteStatement(PreparedStatement stmt,string serializingLock,bool allocateAccount,string accounts,string sequence)
+            DirectExecuteWithAccountId(stmt,accounts,sequence,lockName,7);
+        public bool DirectExecuteWithAccountId(PreparedStatement stmt, string accounts, string sequence, string lockName, int parameterIndex) =>
+            ExecuteStatement(stmt,lockName,true,accounts,sequence,parameterIndex);
+        bool ExecuteStatement(PreparedStatement stmt,string serializingLock,bool allocateAccount,string accounts,string sequence,int parameterIndex = 7)
         {            
             try
             {
@@ -142,7 +144,7 @@ namespace Framework.Database
                 if (allocateAccount)
                 {
                     AccountIdAllocator.Ensure(connection,accounts,sequence);
-                    stmt.SetUInt32(7,AccountIdAllocator.Reserve(connection,accounts,sequence));
+                    stmt.SetUInt32(parameterIndex,AccountIdAllocator.Reserve(connection,accounts,sequence));
                 }
 
                 using MySqlCommand cmd = connection.CreateCommand();

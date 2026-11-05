@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -105,7 +105,7 @@ namespace Game.Entities
                 if (count != 0 && itemid != 0)
                 {
                     InventoryResult msg = CanStoreNewItem(ItemPos.Undefined, out var dest, itemid, count);
-                    Cypher.Assert(msg == InventoryResult.Ok); // Already checked before
+                    Forever.Assert(msg == InventoryResult.Ok); // Already checked before
                     Item it = StoreNewItem(dest, itemid, true);
                     SendNewItem(it, count, true, false, true);
                 }
@@ -944,12 +944,7 @@ namespace Game.Entities
             {
                 var newItem = StoreNewItem(Dest, itemId, true, ItemEnchantmentManager.GenerateRandomProperties(itemId), null, itemContext);
 
-                // if this is ammo then use it
-                msg = CanUseAmmo(newItem.GetEntry());
-                if (msg == InventoryResult.Ok && GetUsedAmmoId() == 0)
-                    SetAmmo(newItem.GetEntry());
-
-                return true;                                        // stored
+                return newItem != null;                              // stored
             }
 
             // item can't be added
@@ -1007,6 +1002,9 @@ namespace Game.Entities
 
                 if (item.GetTemplate().GetInventoryType() != InventoryType.NonEquip)
                     UpdateAverageItemLevelTotal();
+
+                if (item.GetTemplate().GetClass() == ItemClass.Projectile && GetUsedAmmoId() == 0)
+                    AutoSelectAmmo();
             }
             return item;
         }
@@ -1346,6 +1344,9 @@ namespace Game.Entities
             }
 
             // only for full equip instead adding to stack
+            if (!pos.IsContainerPos && pos.Slot == EquipmentSlot.Ranged)
+                AutoSelectAmmo();
+
             UpdateCriteria(CriteriaType.EquipItem, pItem.GetEntry());
             UpdateCriteria(CriteriaType.EquipItemInSlot, pos.Slot, pItem.GetEntry());
 
@@ -2434,7 +2435,7 @@ namespace Game.Entities
             if (crItem.ExtendedCost != 0) // case for new honor system
             {
                 var iece = CliDB.ItemExtendedCostStorage.LookupByKey(crItem.ExtendedCost);
-                Cypher.Assert(iece != null);
+                Forever.Assert(iece != null);
 
                 for (int i = 0; i < ItemConst.MaxItemExtCostItems; ++i)
                 {
@@ -3374,7 +3375,7 @@ namespace Game.Entities
                 // reputation discount
                 price = (long)Math.Floor(price * GetReputationPriceDiscount(creature));
                 price = pProto.GetBuyPrice() > 0 ? Math.Max(1L, price) : price;
-                if (price > 0) price = (long)ApplyClassicLegacyPriceMod((ulong)price, 0);
+                if (price > 0) price = (long)ApplyClassicLegacyPriceMod((ulong)price, Game.Systems.Legacy.LegacyEffectEngine.VendorPriceType);
 
                 int priceMod = GetTotalAuraModifier(AuraType.ModVendorItemsPrices);
                 if (priceMod != 0)
@@ -3890,12 +3891,6 @@ namespace Game.Entities
                     StatMods.ModifyFlat(UnitMods.ResistanceStart + (int)i, resistance, apply, UnitModType.BasePermanent);
             }
 
-            if (proto.GetClass() == ItemClass.Armor && proto.GetSubClass().Armor == ItemSubClassArmor.Shield &&
-                proto.GetShieldBlockValue(proto.GetItemLevel()) is int shieldBlockValue && shieldBlockValue != 0)
-            {
-                SetUpdateFieldValue(m_values.ModifyValue(m_activePlayerData).ModifyValue(m_activePlayerData.ShieldBlock), apply ? shieldBlockValue : 0);
-            }
-
             var attType = GetAttackBySlot(slot);
             if (attType.HasValue)
             {
@@ -4361,7 +4356,7 @@ namespace Game.Entities
                             if (!sourceItem.IsBag())
                                 return InventoryResult.NotABag;
 
-                            if (pos.Slot - InventorySlots.BankBagStart >= GetBankBagSlotCount())
+                            if (pos.Slot - InventorySlots.BankBagStart >= GetCharacterBankTabCount())
                                 return InventoryResult.NoBankSlot;
 
                             return CanUseItem(sourceItem, not_loading);
@@ -4812,12 +4807,79 @@ namespace Game.Entities
 
         public int GetUsedAmmoId()
         {
-            return m_activePlayerData.AmmoID;
+            // The Classic client interprets the reference PvpMedals field as AmmoID.
+            return unchecked((int)(uint)m_activePlayerData.PvpMedals);
         }
 
         public void SetUsedAmmoId(int ammoId)
         {
-            SetUpdateFieldValue(m_values.ModifyValue(m_activePlayerData).ModifyValue(m_activePlayerData.AmmoID), ammoId);   
+            SetUpdateFieldValue(m_values.ModifyValue(m_activePlayerData).ModifyValue(m_activePlayerData.PvpMedals), unchecked((uint)ammoId));
+        }
+
+        public static int GetAmmoDisplayId(ItemTemplate ammo) => ammo?.GetDisplayInfoID() ?? 0;
+
+        public static bool HasDrawableAmmoDisplay(ItemTemplate ammo)
+        {
+            int display = GetAmmoDisplayId(ammo);
+            return display > 0 && display < 500000;
+        }
+
+        bool IsAmmoUsableWithRangedWeapon(ItemTemplate ammo)
+        {
+            if (ammo == null || ammo.GetClass() != ItemClass.Projectile)
+                return false;
+
+            var weapon = GetWeaponForAttack(WeaponAttackType.RangedAttack)?.GetTemplate();
+            if (weapon == null)
+                return true;
+
+            return weapon.GetSubClass().Weapon switch
+            {
+                ItemSubClassWeapon.Bow or ItemSubClassWeapon.Crossbow => ammo.GetSubClass().Projectile == ItemSubClassProjectile.Arrow,
+                ItemSubClassWeapon.Gun => ammo.GetSubClass().Projectile == ItemSubClassProjectile.Bullet,
+                _ => true
+            };
+        }
+
+        public void AutoSelectAmmo()
+        {
+            bool preferDrawable = _session != null && _session.IsSIControlled;
+            int current = GetUsedAmmoId();
+            if (current != 0 && GetItemCount(current) != 0
+                && IsAmmoUsableWithRangedWeapon(Global.ObjectMgr.GetItemTemplate(current))
+                && (!preferDrawable || HasDrawableAmmoDisplay(Global.ObjectMgr.GetItemTemplate(current))))
+            {
+                _ApplyAmmoBonuses();
+                return;
+            }
+
+            int found = 0;
+            int foundDrawable = 0;
+            ForEachItem(ItemSearchLocation.Inventory, item =>
+            {
+                var template = item.GetTemplate();
+                if (item.GetCount() == 0 || !IsAmmoUsableWithRangedWeapon(template) || CanUseItem(template) != InventoryResult.Ok)
+                    return true;
+                if (found == 0)
+                    found = item.GetEntry();
+                if (!preferDrawable || HasDrawableAmmoDisplay(template))
+                {
+                    foundDrawable = item.GetEntry();
+                    return false;
+                }
+                return true;
+            });
+
+            if (foundDrawable != 0)
+                found = foundDrawable;
+
+            if (found == 0)
+                RemoveAmmo();
+            else
+            {
+                SetUsedAmmoId(found);
+                _ApplyAmmoBonuses();
+            }
         }
 
         public void SetAmmo(int ammoId)
@@ -5935,9 +5997,32 @@ namespace Game.Entities
                 (uint)(enabled ? current | flags : current & ~flags));
         }
 
+        public void SetAccountSecured(bool secured)
+        {
+            if (secured)
+                SetPlayerLocalFlag(PlayerLocalFlags.AccountSecured);
+            else
+                RemovePlayerLocalFlag(PlayerLocalFlags.AccountSecured);
+
+            UpdateInventorySlotCount();
+        }
+
+        public void UpdateInventorySlotCount()
+        {
+            int slots = InventorySlots.DefaultSize;
+            if (HasPlayerLocalFlag(PlayerLocalFlags.AccountSecured))
+                slots += 4;
+
+            AuraEffect alpacaSaddlebags = GetAuraEffect(317795, 0);
+            if (alpacaSaddlebags != null)
+                slots += alpacaSaddlebags.GetAmount();
+
+            SetInventorySlotCount((byte)Math.Clamp(slots, InventorySlots.DefaultSize, InventorySlots.ItemEnd - InventorySlots.ItemStart));
+        }
+
+        // Absolute saved capacity: do not add account/aura bonuses a second time on login.
         public void SetInventorySlotCount(byte slots)
         {
-            //ASSERT(slots <= (INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START));
 
             if (slots < GetInventorySlotCount())
             {
@@ -5958,7 +6043,7 @@ namespace Game.Entities
 
                     var sendItemsBatch = new Action<int, int>((batchNumber, batchSize) =>
                     {
-                        MailDraft draft = new(Global.ObjectMgr.GetCypherString(CypherStrings.NotEquippedItem), "There were problems with equipping item(s).");
+                        MailDraft draft = new(Global.ObjectMgr.GetForeverString(ForeverStrings.NotEquippedItem), "There were problems with equipping item(s).");
                         for (int j = 0; j < batchSize; ++j)
                             draft.AddItem(unstorableItems[batchNumber * SharedConst.MaxMailItems + j]);
 
@@ -6166,7 +6251,10 @@ namespace Game.Entities
             packet.Acquired = true; // false == No Loot (this too^^)
             packet.AELooting = aeLooting;
             loot.BuildLootResponse(packet, this);
-            SendPacket(packet);
+            // The self-SI owns transfer/release after its animation tick. A loot
+            // window on a client with movement control revoked can close itself
+            // before then and destroy the native view the AI is about to use.
+            if(!IsSelfSIControlled)SendPacket(packet);
 
             // add 'this' player as one of the players that are looting 'loot'
             loot.OnLootOpened(GetMap(), GetGUID());

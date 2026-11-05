@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -17,7 +17,7 @@ namespace Game.DataStorage
     public sealed class PhaseRecord
     {
         public int Id;
-        private int _flags;
+        private int _flags = default;
 
         #region Properties
         public PhaseEntryFlags Flags => (PhaseEntryFlags)_flags;
@@ -49,7 +49,7 @@ namespace Game.DataStorage
         public LocalizedString FailureDescription;
         public ushort MinLevel;
         public ushort MaxLevel;
-        private int _classMask;
+        private int _classMask = default;
         public uint SkillLogic;
         public int LanguageID;
         public byte MinLanguage;
@@ -71,8 +71,8 @@ namespace Game.DataStorage
         public byte PartyStatus;
         public byte LifetimeMaxPVPRank;
         public uint AchievementLogic;
-        private sbyte _gender;
-        private sbyte _nativeGender;
+        private sbyte _gender = default;
+        private sbyte _nativeGender = default;
         public uint AreaLogic;
         public uint LfgLogic;
         public uint CurrencyLogic;
@@ -89,13 +89,13 @@ namespace Game.DataStorage
         public int PhaseGroupID;
         public int Flags;
         public sbyte ChrSpecializationIndex;
-        private sbyte _chrSpecializationRole;
+        private sbyte _chrSpecializationRole = default;
         public int ModifierTreeID;
-        private sbyte _powerType;
+        private sbyte _powerType = default;
         public byte PowerTypeComp;
         public byte PowerTypeValue;
         public int MovementFlags;
-        private int _weaponSubclassMask;
+        private int _weaponSubclassMask = default;
         public byte MaxGuildLevel;
         public byte MinGuildLevel;
         public sbyte MaxExpansionTier;
@@ -134,7 +134,7 @@ namespace Game.DataStorage
         public ushort[] TraitNodeEntryMaxRank = new ushort[4];
 
         #region Properties
-        public RaceMask RaceMask => (RaceMask)_raceMask[0];
+        public RaceMask RaceMask => _raceMask.ToRaceMask();
         public ClassMask ClassMask => (ClassMask)_classMask;
         public Gender Gender => (Gender)_gender;
         public Gender NativeGender => (Gender)_nativeGender;
@@ -143,6 +143,23 @@ namespace Game.DataStorage
         public ItemSubClassWeaponMask WeaponSubclassMask => (ItemSubClassWeaponMask)_weaponSubclassMask;
         public WowTime Time(int index) => (WowTime)_time[index];
         #endregion
+    }
+
+    // 1.60.1: PlayerExpectedStat.db2, one row per class and level (1-123). Field names from the values:
+    // BaseMana matches BaseMp.txt; CritPerAgility is 1 / (agility per 1% melee crit) / 100 (warrior 60: 0.0005 = 20 agility),
+    // SpellCritPerIntellect likewise for spell crit (mage 60: 0.000168 = 59.5 intellect). Unknown3 is always 0, Unknown5 always 10,
+    // Unknown6 is the same for every class (1 at level 1, 287 at 60).
+    public sealed class PlayerExpectedStatRecord
+    {
+        public int Id;
+        public int Level;
+        public int ClassID;
+        public int Unknown3;
+        public int BaseMana;
+        public int Unknown5;
+        public int Unknown6;
+        public float CritPerAgility;
+        public float SpellCritPerIntellect;
     }
 
     public sealed class PowerDisplayRecord
@@ -160,7 +177,7 @@ namespace Game.DataStorage
         public string NameGlobalStringTag;
         public string CostGlobalStringTag;        
         public int Id;
-        private sbyte _powerTypeEnum;
+        private sbyte _powerTypeEnum = default;
         public int MinPower;
         public int MaxBasePower;
         public int CenterPower;
@@ -169,7 +186,7 @@ namespace Game.DataStorage
         public int _regenInterruptTimeMS;
         public float RegenPeace;
         public float RegenCombat;
-        private int _flags;
+        private int _flags = default;
 
         #region Properties
         public PowerTypeFlags Flags => (PowerTypeFlags)_flags;
@@ -196,7 +213,7 @@ namespace Game.DataStorage
         public LocalizedString Name;
         public int PrestigeLevel;
         public int BadgeTextureFileDataID;
-        private byte _flags;
+        private byte _flags = default;
         public int AwardedAchievementID;
 
         #region Properties
@@ -221,7 +238,7 @@ namespace Game.DataStorage
     public sealed class PvpDifficultyRecord
     {
         public int Id;
-        private byte RangeIndex;
+        private byte RangeIndex = default;
         public byte MinLevel;
         public byte MaxLevel;
         public int MapID;

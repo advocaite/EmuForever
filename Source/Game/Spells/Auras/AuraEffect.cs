@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -79,7 +79,7 @@ namespace Game.Spells
                 case AuraType.Transform:
                 case AuraType.ModRoot2:
                     m_canBeRecalculated = false;
-                    if (m_spellInfo.ProcFlags == null)
+                    if (m_spellInfo.ProcFlags == ProcFlagsInit.None)
                         break;
                     amount = (int)(GetBase().GetUnitOwner().CountPctFromMaxHealth(10));
                     break;
@@ -354,7 +354,7 @@ namespace Game.Spells
         public void HandleEffect(AuraApplication aurApp, AuraEffectHandleModes mode, bool apply, AuraEffect triggeredBy = null)
         {
             // check if call is correct, we really don't want using bitmasks here (with 1 exception)
-            Cypher.Assert(mode == AuraEffectHandleModes.Real || mode == AuraEffectHandleModes.SendForClient
+            Forever.Assert(mode == AuraEffectHandleModes.Real || mode == AuraEffectHandleModes.SendForClient
                 || mode == AuraEffectHandleModes.ChangeAmount || mode == AuraEffectHandleModes.Stat
                 || mode == AuraEffectHandleModes.Skill || mode == AuraEffectHandleModes.Reapply
                 || mode == (AuraEffectHandleModes.ChangeAmount | AuraEffectHandleModes.Reapply));
@@ -397,7 +397,7 @@ namespace Game.Spells
         public void HandleEffect(Unit target, AuraEffectHandleModes mode, bool apply, AuraEffect triggeredBy = null)
         {
             AuraApplication aurApp = GetBase().GetApplicationOfTarget(target.GetGUID());
-            Cypher.Assert(aurApp != null);
+            Forever.Assert(aurApp != null);
             HandleEffect(aurApp, mode, apply, triggeredBy);
         }
 
@@ -3444,7 +3444,7 @@ namespace Game.Spells
             Unit target = aurApp.GetTarget();
 
             PowerType power = (PowerType)GetMiscValue();
-            UnitMods unitMod = UnitMods.PowerStart + (int)power;
+            UnitMods unitMod = UnitModManager.GetPowerUnitMod(power);
 
             target.StatMods.ModifyFlat(unitMod, GetAmount(), apply, UnitModType.TotalPermanent);
         }
@@ -3531,7 +3531,7 @@ namespace Game.Spells
 
             Unit target = aurApp.GetTarget();
             PowerType powerType = (PowerType)GetMiscValue();
-            target.StatMods.ModifyFlat(UnitMods.PowerStart + (int)powerType, GetAmount(), apply, UnitModType.TotalPermanent);
+            target.StatMods.ModifyFlat(UnitModManager.GetPowerUnitMod(powerType), GetAmount(), apply, UnitModType.TotalPermanent);
         }
 
         [AuraEffectHandler(AuraType.ModIncreaseEnergyPercent)]
@@ -3542,7 +3542,7 @@ namespace Game.Spells
 
             Unit target = aurApp.GetTarget();
             PowerType powerType = (PowerType)GetMiscValue();
-            target.StatMods.ModifyMult(UnitMods.PowerStart + (int)powerType, GetAmount(), apply, UnitModType.TotalPermanent);
+            target.StatMods.ModifyMult(UnitModManager.GetPowerUnitMod(powerType), GetAmount(), apply, UnitModType.TotalPermanent);
         }
 
         [AuraEffectHandler(AuraType.ModIncreaseHealthPercent)]
@@ -3624,7 +3624,7 @@ namespace Game.Spells
                 return;
 
             PowerType powerType = (PowerType)GetMiscValue();
-            target.StatMods.ModifyMult(UnitMods.PowerStart + (int)powerType, GetAmount(), apply, UnitModType.TotalPermanent);
+            target.StatMods.ModifyMult(UnitModManager.GetPowerUnitMod(powerType), GetAmount(), apply, UnitModType.TotalPermanent);
         }
 
         [AuraEffectHandler(AuraType.TriggerSpellOnHealthPct)]
@@ -3715,7 +3715,7 @@ namespace Game.Spells
             {
                 // Always (schoolMask == schoolMask.Magic) for creatures?
                 // target.BaseSpellCritChance += apply ? GetAmount() : -GetAmount();
-                Cypher.Assert(false, "Units have only BaseSpellCritChance mod?", "HandleModSpellCritSchoolChance");
+                Forever.Assert(false, "Units have only BaseSpellCritChance mod?", "HandleModSpellCritSchoolChance");
             }
         }
 

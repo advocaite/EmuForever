@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -15,18 +15,19 @@ namespace Game.Chat.Commands
         {
             if (accountName.IsEmpty() || !accountName.Contains('@'))
             {
-                handler.SendSysMessage(CypherStrings.AccountInvalidBnetName);
+                handler.SendSysMessage(ForeverStrings.AccountInvalidBnetName);
                 return false;
             }
 
+            bool withGameAccount = createGameAccount.GetValueOrDefault(true);
             string gameAccountName;
-            switch (Global.BNetAccountMgr.CreateBattlenetAccount(accountName, password, createGameAccount.GetValueOrDefault(true), out gameAccountName))
+            switch (Global.BNetAccountMgr.CreateBattlenetAccount(accountName, password, withGameAccount, out gameAccountName))
             {
                 case AccountOpResult.Ok:
-                    if (createGameAccount.HasValue && createGameAccount.Value)
-                        handler.SendSysMessage(CypherStrings.AccountCreatedBnetWithGame, accountName, gameAccountName);
+                    if (withGameAccount)
+                        handler.SendSysMessage(ForeverStrings.AccountCreatedBnetWithGame, accountName, gameAccountName);
                     else
-                        handler.SendSysMessage(CypherStrings.AccountCreated, accountName);
+                        handler.SendSysMessage(ForeverStrings.AccountCreated, accountName);
 
                     if (handler.GetSession() != null)
                     {
@@ -34,20 +35,24 @@ namespace Game.Chat.Commands
                             $"Account: {handler.GetSession().GetAccountId()} (IP: {handler.GetSession().GetRemoteAddress()}) " +
                             $"Character:[{handler.GetSession().GetPlayer().GetName()}] ({handler.GetSession().GetPlayer().GetGUID()}) " +
                             $"created Battle.net account " +
-                            $"{accountName}{(createGameAccount.Value ? " with game account " : "")}{(createGameAccount.Value ? gameAccountName : "")}");
+                            $"{accountName}{(withGameAccount ? " with game account " : "")}{(withGameAccount ? gameAccountName : "")}");
                     }
                     break;
                 case AccountOpResult.NameTooLong:
-                    handler.SendSysMessage(CypherStrings.AccountNameTooLong);
+                    handler.SendSysMessage(ForeverStrings.AccountNameTooLong);
                     return false;
                 case AccountOpResult.PassTooLong:
-                    handler.SendSysMessage(CypherStrings.AccountPassTooLong);
+                    handler.SendSysMessage(ForeverStrings.AccountPassTooLong);
                     return false;
                 case AccountOpResult.NameAlreadyExist:
-                    handler.SendSysMessage(CypherStrings.AccountAlreadyExist);
+                    handler.SendSysMessage(ForeverStrings.AccountAlreadyExist);
+                    return false;
+                case AccountOpResult.DBInternalError:
+                    handler.SendSysMessage(ForeverStrings.AccountNotCreatedSqlError, accountName);
                     return false;
                 default:
-                    break;
+                    handler.SendSysMessage(ForeverStrings.AccountNotCreated, accountName);
+                    return false;
             }
 
             return true;
@@ -59,7 +64,7 @@ namespace Game.Chat.Commands
             int accountId = Global.BNetAccountMgr.GetId(bnetAccountName);
             if (accountId == 0)
             {
-                handler.SendSysMessage(CypherStrings.AccountNotExist, bnetAccountName);
+                handler.SendSysMessage(ForeverStrings.AccountNotExist, bnetAccountName);
                 return false;
             }
 
@@ -71,7 +76,7 @@ namespace Game.Chat.Commands
             switch (Global.AccountMgr.CreateAccount(accountName, randPassword.ToHexString(), bnetAccountName, accountId, index))
             {
                 case AccountOpResult.Ok:
-                    handler.SendSysMessage(CypherStrings.AccountCreated, accountName);
+                    handler.SendSysMessage(ForeverStrings.AccountCreated, accountName);
                     if (handler.GetSession() != null)
                     {
                         Log.outInfo(LogFilter.Player, 
@@ -81,19 +86,19 @@ namespace Game.Chat.Commands
                     }
                     break;
                 case AccountOpResult.NameTooLong:
-                    handler.SendSysMessage(CypherStrings.AccountNameTooLong);
+                    handler.SendSysMessage(ForeverStrings.AccountNameTooLong);
                     return false;
                 case AccountOpResult.PassTooLong:
-                    handler.SendSysMessage(CypherStrings.AccountPassTooLong);
+                    handler.SendSysMessage(ForeverStrings.AccountPassTooLong);
                     return false;
                 case AccountOpResult.NameAlreadyExist:
-                    handler.SendSysMessage(CypherStrings.AccountAlreadyExist);
+                    handler.SendSysMessage(ForeverStrings.AccountAlreadyExist);
                     return false;
                 case AccountOpResult.DBInternalError:
-                    handler.SendSysMessage(CypherStrings.AccountNotCreatedSqlError, accountName);
+                    handler.SendSysMessage(ForeverStrings.AccountNotCreatedSqlError, accountName);
                     return false;
                 default:
-                    handler.SendSysMessage(CypherStrings.AccountNotCreated, accountName);
+                    handler.SendSysMessage(ForeverStrings.AccountNotCreated, accountName);
                     return false;
             }
 
@@ -106,13 +111,13 @@ namespace Game.Chat.Commands
             switch (Global.BNetAccountMgr.LinkWithGameAccount(bnetAccountName, gameAccountName))
             {
                 case AccountOpResult.Ok:
-                    handler.SendSysMessage(CypherStrings.AccountBnetLinked, bnetAccountName, gameAccountName);
+                    handler.SendSysMessage(ForeverStrings.AccountBnetLinked, bnetAccountName, gameAccountName);
                     break;
                 case AccountOpResult.NameNotExist:
-                    handler.SendSysMessage(CypherStrings.AccountOrBnetDoesNotExist, bnetAccountName, gameAccountName);
+                    handler.SendSysMessage(ForeverStrings.AccountOrBnetDoesNotExist, bnetAccountName, gameAccountName);
                     break;
                 case AccountOpResult.BadLink:
-                    handler.SendSysMessage( CypherStrings.AccountAlreadyLinked, gameAccountName);
+                    handler.SendSysMessage( ForeverStrings.AccountAlreadyLinked, gameAccountName);
                     break;
                 default:
                     break;
@@ -140,7 +145,7 @@ namespace Game.Chat.Commands
                 });
 
                 handler.SendSysMessage("----------------------------------------------------");
-                handler.SendSysMessage(CypherStrings.AccountBnetListHeader);
+                handler.SendSysMessage(ForeverStrings.AccountBnetListHeader);
                 handler.SendSysMessage("----------------------------------------------------");
                 do
                 {
@@ -149,7 +154,7 @@ namespace Game.Chat.Commands
                 handler.SendSysMessage("----------------------------------------------------");
             }
             else
-                handler.SendSysMessage(CypherStrings.AccountBnetListNoAccounts, battlenetAccountName);
+                handler.SendSysMessage(ForeverStrings.AccountBnetListNoAccounts, battlenetAccountName);
 
             return true;
         }
@@ -160,7 +165,7 @@ namespace Game.Chat.Commands
             // We compare the old, saved password to the entered old password - no Chance for the unauthorized.
             if (!Global.BNetAccountMgr.CheckPassword(handler.GetSession().GetBattlenetAccountId(), oldPassword))
             {
-                handler.SendSysMessage(CypherStrings.CommandWrongoldpassword);
+                handler.SendSysMessage(ForeverStrings.CommandWrongoldpassword);
 
                 Log.outInfo(LogFilter.Player, 
                     $"Battle.net account: {handler.GetSession().GetBattlenetAccountId()} (IP: {handler.GetSession().GetRemoteAddress()}) " +
@@ -172,7 +177,7 @@ namespace Game.Chat.Commands
             // Making sure that newly entered password is correctly entered.
             if (newPassword != passwordConfirmation)
             {
-                handler.SendSysMessage(CypherStrings.NewPasswordsNotMatch);
+                handler.SendSysMessage(ForeverStrings.NewPasswordsNotMatch);
                 return false;
             }
 
@@ -181,16 +186,16 @@ namespace Game.Chat.Commands
             switch (result)
             {
                 case AccountOpResult.Ok:
-                    handler.SendSysMessage(CypherStrings.CommandPassword);
+                    handler.SendSysMessage(ForeverStrings.CommandPassword);
                     Log.outInfo(LogFilter.Player, 
                         $"Battle.net account: {handler.GetSession().GetBattlenetAccountId()} (IP: {handler.GetSession().GetRemoteAddress()}) " +
                         $"Character:[{handler.GetSession().GetPlayer().GetName()}] ({handler.GetSession().GetPlayer().GetGUID()}) Changed Password.");
                     break;
                 case AccountOpResult.PassTooLong:
-                    handler.SendSysMessage(CypherStrings.PasswordTooLong);
+                    handler.SendSysMessage(ForeverStrings.PasswordTooLong);
                     return false;
                 default:
-                    handler.SendSysMessage(CypherStrings.CommandNotchangepassword);
+                    handler.SendSysMessage(ForeverStrings.CommandNotchangepassword);
                     return false;
             }
 
@@ -203,13 +208,13 @@ namespace Game.Chat.Commands
             switch (Global.BNetAccountMgr.UnlinkGameAccount(gameAccountName))
             {
                 case AccountOpResult.Ok:
-                    handler.SendSysMessage(CypherStrings.AccountBnetUnlinked, gameAccountName);
+                    handler.SendSysMessage(ForeverStrings.AccountBnetUnlinked, gameAccountName);
                     break;
                 case AccountOpResult.NameNotExist:
-                    handler.SendSysMessage(CypherStrings.AccountNotExist, gameAccountName);
+                    handler.SendSysMessage(ForeverStrings.AccountNotExist, gameAccountName);
                     break;
                 case AccountOpResult.BadLink:
-                    handler.SendSysMessage(CypherStrings.AccountBnetNotLinked, gameAccountName);
+                    handler.SendSysMessage(ForeverStrings.AccountBnetNotLinked, gameAccountName);
                     break;
                 default:
                     break;
@@ -260,12 +265,12 @@ namespace Game.Chat.Commands
                 if (state)
                 {
                     stmt.SetBool(0, true);                                     // locked
-                    handler.SendSysMessage(CypherStrings.CommandAcclocklocked);
+                    handler.SendSysMessage(ForeverStrings.CommandAcclocklocked);
                 }
                 else
                 {
                     stmt.SetBool(0, false);                                    // unlocked
-                    handler.SendSysMessage(CypherStrings.CommandAcclockunlocked);
+                    handler.SendSysMessage(ForeverStrings.CommandAcclockunlocked);
                 }
 
                 stmt.SetInt32(1, handler.GetSession().GetBattlenetAccountId());
@@ -284,13 +289,13 @@ namespace Game.Chat.Commands
                 int targetAccountId = Global.BNetAccountMgr.GetId(accountName);
                 if (targetAccountId == 0)
                 {
-                    handler.SendSysMessage(CypherStrings.AccountNotExist, accountName);
+                    handler.SendSysMessage(ForeverStrings.AccountNotExist, accountName);
                     return false;
                 }
 
                 if (password != passwordConfirmation)
                 {
-                    handler.SendSysMessage(CypherStrings.NewPasswordsNotMatch);
+                    handler.SendSysMessage(ForeverStrings.NewPasswordsNotMatch);
                     return false;
                 }
 
@@ -298,13 +303,13 @@ namespace Game.Chat.Commands
                 switch (result)
                 {
                     case AccountOpResult.Ok:
-                        handler.SendSysMessage(CypherStrings.CommandPassword);
+                        handler.SendSysMessage(ForeverStrings.CommandPassword);
                         break;
                     case AccountOpResult.NameNotExist:
-                        handler.SendSysMessage(CypherStrings.AccountNotExist, accountName);
+                        handler.SendSysMessage(ForeverStrings.AccountNotExist, accountName);
                         return false;
                     case AccountOpResult.PassTooLong:
-                        handler.SendSysMessage(CypherStrings.PasswordTooLong);
+                        handler.SendSysMessage(ForeverStrings.PasswordTooLong);
                         return false;
                     default:
                         break;

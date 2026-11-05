@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -1522,13 +1522,13 @@ namespace Game.Networking.Packets
         public ushort CastLevel = 1;
         public byte Applications = 1;
         public int ContentTuningID;
-        ContentTuningParams ContentTuning;
+        ContentTuningParams ContentTuning = default;
         public Vector3 DstLocation;
         public ObjectGuid? CastUnit;
         public ObjectGuid? CastItem;
         public int? Duration;
         public int? Remaining;
-        float? TimeMod;
+        float? TimeMod = default;
         public List<float> Points = new();
         public List<float> EstimatedPoints = new();
     }
@@ -2052,8 +2052,8 @@ namespace Game.Networking.Packets
         public int CategoryRecoveryTime;
         public float ModRate = 1.0f;
         public bool OnHold;
-        uint? unused622_1;   // This field is not used for anything in the client in 6.2.2.20444
-        uint? unused622_2;   // This field is not used for anything in the client in 6.2.2.20444
+        uint? unused622_1 = default;   // This field is not used for anything in the client in 6.2.2.20444
+        uint? unused622_2 = default;   // This field is not used for anything in the client in 6.2.2.20444
     }
 
     public class SpellChargeEntry

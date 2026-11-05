@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -55,6 +55,7 @@ namespace Game
 
         void HandleMovementOpcode(ClientOpcodes opcode, MovementInfo movementInfo)
         {
+            if (_player.IsSelfSIControlled) return;
             Unit mover = GetPlayer().GetUnitBeingMoved();
             Player plrMover = mover.ToPlayer();
 
@@ -242,7 +243,7 @@ namespace Game
             Player player = GetPlayer();
 
             // ignore unexpected far teleports
-            if (!player.IsBeingTeleportedFar())
+            if (!player.IsBeingTeleportedFar()||player.HasPendingTeleportDispatch)
                 return;
 
             bool seamlessTeleport = player.IsBeingTeleportedSeamlessly();
@@ -475,9 +476,9 @@ namespace Game
         [WorldPacketHandler(ClientOpcodes.MoveTeleportAck, Processing = PacketProcessing.ThreadSafe)]
         void HandleMoveTeleportAck(MoveTeleportAck packet)
         {
-            Player plMover = GetPlayer().GetUnitBeingMoved().ToPlayer();
+            Player plMover = GetPlayer().GetUnitBeingMoved()?.ToPlayer();
 
-            if (plMover == null || !plMover.IsBeingTeleportedNear())
+            if (plMover == null || !plMover.IsBeingTeleportedNear()||plMover.HasPendingTeleportDispatch)
                 return;
 
             if (packet.MoverGUID != plMover.GetGUID())
@@ -488,8 +489,8 @@ namespace Game
 
         void CompleteNearTeleport()
         {
-            Player plMover = GetPlayer().GetUnitBeingMoved().ToPlayer();
-            if (plMover == null || !plMover.IsBeingTeleportedNear())
+            Player plMover = IsServerControlled ? GetPlayer() : GetPlayer().GetUnitBeingMoved()?.ToPlayer();
+            if (plMover == null || !plMover.IsBeingTeleportedNear()||plMover.HasPendingTeleportDispatch)
                 return;
 
             plMover.SetSemaphoreTeleportNear(false);
@@ -619,7 +620,8 @@ namespace Game
         [WorldPacketHandler(ClientOpcodes.SetActiveMover)]
         void HandleSetActiveMover(SetActiveMover packet)
         {
-            if (GetPlayer().IsInWorld)
+            // Under .si me the server owns movement, so the client correctly reports that it moves nothing.
+            if (GetPlayer().IsInWorld && !_player.IsSelfSIControlled)
             {
                 if (_player.GetUnitBeingMoved().GetGUID() != packet.ActiveMover)
                 {
@@ -634,6 +636,7 @@ namespace Game
         [WorldPacketHandler(ClientOpcodes.MoveKnockBackAck, Processing = PacketProcessing.ThreadSafe)]
         void HandleMoveKnockBackAck(MoveKnockBackAck movementAck)
         {
+            if (_player.IsSelfSIControlled) return;
             GetPlayer().ValidateMovementInfo(movementAck.Ack.Status);
 
             if (GetPlayer().GetUnitBeingMoved().GetGUID() != movementAck.Ack.Status.Guid)
@@ -683,7 +686,7 @@ namespace Game
         void HandleMoveApplyMovementForceAck(MoveApplyMovementForceAck moveApplyMovementForceAck)
         {
             Unit mover = _player.GetUnitBeingMoved();
-            Cypher.Assert(mover != null);
+            Forever.Assert(mover != null);
             _player.ValidateMovementInfo(moveApplyMovementForceAck.Ack.Status);
 
             // prevent tampered movement data
@@ -708,7 +711,7 @@ namespace Game
         void HandleMoveRemoveMovementForceAck(MoveRemoveMovementForceAck moveRemoveMovementForceAck)
         {
             Unit mover = _player.GetUnitBeingMoved();
-            Cypher.Assert(mover != null);
+            Forever.Assert(mover != null);
             _player.ValidateMovementInfo(moveRemoveMovementForceAck.Ack.Status);
 
             // prevent tampered movement data
@@ -733,7 +736,7 @@ namespace Game
         void HandleMoveSetModMovementForceMagnitudeAck(MovementSpeedAck setModMovementForceMagnitudeAck)
         {
             Unit mover = _player.GetUnitBeingMoved();
-            Cypher.Assert(mover != null);                      // there must always be a mover
+            Forever.Assert(mover != null);                      // there must always be a mover
             _player.ValidateMovementInfo(setModMovementForceMagnitudeAck.Ack.Status);
 
             // prevent tampered movement data

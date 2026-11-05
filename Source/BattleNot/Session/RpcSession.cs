@@ -8,13 +8,13 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using Framework.Configuration;
 
 namespace BattleNot;
 
 sealed class PlayerSession
 {
     const int MaxRpcPayload = 1_048_576;
-    readonly AppConfig _config;
     readonly BnotDb _db;
     readonly RealmCatalog _realms;
     readonly string _ip;
@@ -49,9 +49,8 @@ sealed class PlayerSession
 
     public bool ReceivedPacket => _receivedPacket;
 
-    public PlayerSession(AppConfig config, BnotDb db, RealmCatalog realms, string ip, bool devCert)
+    public PlayerSession(BnotDb db, RealmCatalog realms, string ip, bool devCert)
     {
-        _config = config;
         _db = db;
         _realms = realms;
         _ip = ip;
@@ -461,8 +460,10 @@ sealed class PlayerSession
 
     async Task SendWebChallenge(SslStream stream, bool v2)
     {
-        string host = IPAddress.IsLoopback(IPAddress.Parse(_ip)) ? _config.LocalAddress : _config.ExternalAddress;
-        string url = $"{(_devCert ? "http" : "https")}://{host}:{_config.RestPort}/bnetserver/login/";
+        string host = ConfigMgr.GetDefaultValue(
+            IPAddress.IsLoopback(IPAddress.Parse(_ip)) ? "LoginREST.LocalAddress" : "LoginREST.ExternalAddress", "trinity.actual.battle.net");
+        int port = ConfigMgr.GetDefaultValue("LoginREST.Port", 8081);
+        string url = $"{(_devCert ? "http" : "https")}://{host}:{port}/bnetserver/login/";
         var challenge = new ProtoWriter();
         challenge.String(2, "web_auth_url");
         challenge.String(3, url);
@@ -550,7 +551,7 @@ sealed class PlayerSession
                 result.String(7, tag);
             await Request(stream, Rpc.AuthListenerV1, 5, result.ToArray());
         }
-        Log.outInfo(LogFilter.Network, $"Battle.not logon {_ip} account {account.Id} ({account.Email}) {tag}, {account.Games.Count} game account(s).");
+        Log.outInfo(LogFilter.Network, $"Battle.not logon {_ip} account {account.Id} ({account.Email}) {tag}, {account.Games.Count} game account(s), auth v{(v2 ? 2 : 1)}.");
     }
 
     async Task Account(SslStream stream, uint hash, uint method, uint token, byte[] payload)
@@ -598,7 +599,7 @@ sealed class PlayerSession
             {
                 var info = new ProtoWriter();
                 info.Varint(1, game.Id);
-                info.String(2, game.DisplayName);
+                info.String(2, game.AccountName);
                 response.Message(1, info);
             }
             await Respond(stream, token, Rpc.ErrorOk, response.ToArray());
@@ -626,7 +627,9 @@ sealed class PlayerSession
         }
         if (hash == Rpc.AccountV1 && method is 30 or 31)
         {
-            await Respond(stream, token, Rpc.ErrorOk, []);
+            var reply = AccountStateReplies.BuildV1(_account, method, payload);
+            Log.outDebug(LogFilter.Network, $"Account v1 method {method}: {_account.Games.Count} owned game account(s), response {reply.Body.Length} bytes, status 0x{reply.Status:X}.");
+            await Respond(stream, token, reply.Status, reply.Body);
             return;
         }
         await Respond(stream, token, method == 0 ? Rpc.ErrorRpcInvalidMethod : Rpc.ErrorRpcNotImplemented, null);
@@ -665,7 +668,7 @@ sealed class PlayerSession
             var response = new ProtoWriter();
             if (key is "Command_RealmListRequest" or "Command_RealmListRequest_v1")
             {
-                foreach (string subRegion in _realms.Snapshot().Select(realm => realm.SubRegion).Distinct())
+                foreach (string subRegion in _realms.Snapshot(_build).Select(realm => realm.SubRegion).Distinct())
                     response.Message(1, Messages.Variant(v2, Kind.String, text: subRegion));
                 await Respond(stream, token, Rpc.ErrorOk, response.ToArray());
                 return;
@@ -727,7 +730,7 @@ sealed class PlayerSession
                 values.Add(("Param_BleepProxyList", Blob(JsonText.Compress("JSONBleepProxyList:{}"))));
                 return (Rpc.ErrorOk, values);
             case "Command_SuperDistrictListRequest":
-                values.Add(("Param_SuperDistrictList", Blob(JsonText.Compress("JSONSuperDistrictList:{\"superDistricts\":[" + _realms.SuperDistrictEntries() + "]}"))));
+                values.Add(("Param_SuperDistrictList", Blob(JsonText.Compress("JSONSuperDistrictList:{\"superDistricts\":[" + _realms.SuperDistrictEntries(_build) + "]}"))));
                 return (Rpc.ErrorOk, values);
             default:
                 Log.outDebug(LogFilter.Network, $"Unknown game utility command '{command}'.");
@@ -743,14 +746,25 @@ sealed class PlayerSession
         if (sub?.Kind != Kind.String || sub.Value.Text == null)
             return Rpc.ErrorUtilUnknownRealm;
         LastPlayed? played = null;
-        if (_game.LastPlayed.TryGetValue(sub.Value.Text, out LastPlayed? found))
+        if (_game.LastPlayed.TryGetValue(sub.Value.Text, out LastPlayed? found)
+            && _realms.Find(found.RealmAddress) is RealmEntry foundRealm && _realms.RealmEntryJson(foundRealm, _build, _game.Security).Length > 0)
             played = found;
         Variant? filter = Find(parameters, "Param_ContentSetIDFilter");
         if (filter != null && Number(filter.Value, out long content) && content >= 0)
         {
-            RealmEntry? ruleset = _realms.FindContentSet((uint)content);
-            if (ruleset != null && _game.LastPlayed.TryGetValue(ruleset.SubRegion, out LastPlayed? rulesetChar))
+            RealmEntry? ruleset = _realms.FindContentSet((uint)content, _build);
+            if (ruleset != null && _game.LastPlayed.TryGetValue(ruleset.SubRegion, out LastPlayed? rulesetChar)
+                && _realms.Find(rulesetChar.RealmAddress) is RealmEntry rulesetRealm && _realms.RealmEntryJson(rulesetRealm, _build, _game.Security).Length > 0)
                 played = rulesetChar;
+        }
+        else if (played == null)
+        {
+            // With several realms every one is its own sub-region, and the login request (no ruleset filter) names whichever one
+            // the client selected (70-1-73, Hardcore). An empty answer there sends the client to the ruleset picker, so answer with
+            // the most recent character on any realm; its realm entry carries the superDistrictID the client then joins.
+            played = _game.LastPlayed.Values
+                .Where(p => _realms.Find(p.RealmAddress) is RealmEntry r && _realms.RealmEntryJson(r, _build, _game.Security).Length > 0)
+                .MaxBy(p => p.Time);
         }
         if (played != null)
         {
@@ -767,14 +781,14 @@ sealed class PlayerSession
         }
         if (filter != null && Number(filter.Value, out long contentSet) && contentSet >= 0)
         {
-            RealmEntry? realm = _realms.FindContentSet((uint)contentSet) ?? _realms.FirstOnline();
+            RealmEntry? realm = _realms.FindContentSet((uint)contentSet, _build) ?? _realms.FirstOnline(_build);
             if (realm != null)
             {
-                string json = _realms.RealmEntryJson(realm, _build, _game.Security);
+                string json = _realms.RealmSelectionJson(realm, _build, _game.Security);
                 if (json.Length > 0)
                 {
                     values.Add(("Param_RealmEntry", Blob(JsonText.Compress("JamJSONRealmEntry:" + json))));
-                    values.Add(("Param_LastPlayedTime", Int(DateTimeOffset.UtcNow.ToUnixTimeSeconds())));
+                    values.Add(("Param_LastPlayedTime", Int(realm.PopulationState == 0 ? 0 : DateTimeOffset.UtcNow.ToUnixTimeSeconds())));
                     values.Add(("Param_UtilityInfo", Blob(JsonText.Compress("JSONUtilityInfo:{\"realmPermissions\":512}"))));
                 }
             }
@@ -910,6 +924,8 @@ sealed class PlayerSession
         if (list.Length == 0)
             return Rpc.ErrorUtilSerialize;
         var counts = new StringBuilder();
+        var visibleAddresses = _realms.Snapshot(_build)
+            .Where(realm => realm.SubRegion == sub.Value.Text).Select(realm => realm.Address).ToHashSet();
         if (_game.CharacterCounts.Count == 0)
             counts.Append("{}");
         else
@@ -918,6 +934,8 @@ sealed class PlayerSession
             bool first = true;
             foreach (var (address, count) in _game.CharacterCounts)
             {
+                if (!visibleAddresses.Contains(address))
+                    continue;
                 if (!first)
                     counts.Append(',');
                 first = false;
@@ -927,6 +945,7 @@ sealed class PlayerSession
         }
         values.Add(("Param_RealmList", Blob(list)));
         values.Add(("Param_CharacterCountList", Blob(JsonText.Compress("JSONRealmCharacterCountList:" + counts))));
+        Log.outDebug(LogFilter.Network, $"Realm list build {_build} sub-region {sub.Value.Text}: {visibleAddresses.Count} matching realm(s).");
         return Rpc.ErrorOk;
     }
 
@@ -994,7 +1013,7 @@ sealed class PlayerSession
             if (!PersistedRealmJoinCredentials.TryGetValue(game.Id, out RealmJoinCredential? persisted)
                 || !ReferenceEquals(persisted, credential))
             {
-                await _db.Auth.UpdateGameLogin(game.Name, credential.SessionKey, _ip, _build, Text.Locale(_locale), _platform, _timezone);
+                await _db.Auth.UpdateGameLogin(game.Id, credential.SessionKey, _ip, _build, Text.Locale(_locale), _platform, _timezone);
                 PersistedRealmJoinCredentials[game.Id] = credential;
             }
         }
@@ -1183,20 +1202,47 @@ static class Messages
 
 sealed class BnetHost
 {
-    readonly AppConfig _config;
     readonly BnotDb _db;
     readonly RealmCatalog _realms;
     readonly X509Certificate2 _certificate;
     readonly bool _devCert;
 
-    public BnetHost(AppConfig config, BnotDb db, RealmCatalog realms)
+    public BnetHost(BnotDb db, RealmCatalog realms, string certificateFile, string privateKeyFile)
     {
-        _config = config;
         _db = db;
         _realms = realms;
-        X509Certificate2 pem = X509Certificate2.CreateFromPemFile(config.CertificateFile, config.PrivateKeyFile);
-        _certificate = new X509Certificate2(pem.Export(X509ContentType.Pkcs12));
+        _certificate = LoadCertificate(certificateFile, privateKeyFile);
         _devCert = _certificate.GetNameInfo(X509NameType.SimpleName, false) == "*.*";
+    }
+
+    // Missing or unreadable PEM files fall back to an in-memory "*.*" development certificate
+    // (plain http login/shop) instead of taking the whole server down.
+    static X509Certificate2 LoadCertificate(string certificateFile, string privateKeyFile)
+    {
+        string? problem = null;
+        if (string.IsNullOrEmpty(certificateFile) || !File.Exists(certificateFile))
+            problem = $"CertificateFile not found: '{certificateFile}'";
+        else if (string.IsNullOrEmpty(privateKeyFile) || !File.Exists(privateKeyFile))
+            problem = $"PrivateKeyFile not found: '{privateKeyFile}'";
+        else
+        {
+            try
+            {
+                using X509Certificate2 pem = X509Certificate2.CreateFromPemFile(certificateFile, privateKeyFile);
+                return X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
+            }
+            catch (Exception ex)
+            {
+                problem = $"Failed to load certificate '{certificateFile}' / '{privateKeyFile}': {ex.Message}";
+            }
+        }
+
+        Log.outError(LogFilter.Server, problem);
+        Log.outWarn(LogFilter.Server, "Falling back to a temporary development certificate (*.*); login and shop will run over plain http.");
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest("CN=*.*", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using X509Certificate2 dev = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
+        return X509CertificateLoader.LoadPkcs12(dev.Export(X509ContentType.Pkcs12), null);
     }
 
     public bool DevCertificate => _devCert;
@@ -1204,9 +1250,11 @@ sealed class BnetHost
 
     public async Task Listen(CancellationToken cancel)
     {
-        var listener = new TcpListener(_config.BindIP, _config.BattlenetPort);
+        IPAddress bindIP = IPAddress.Parse(ConfigMgr.GetDefaultValue("BindIP", "127.0.0.1"));
+        int port = ConfigMgr.GetDefaultValue("BattlenetPort", 1119);
+        var listener = new TcpListener(bindIP, port);
         listener.Start();
-        Log.outInfo(LogFilter.Network, $"Battle.not RPC {_config.BindIP}:{_config.BattlenetPort}");
+        Log.outInfo(LogFilter.Network, $"Battle.not RPC {bindIP}:{port}");
         try
         {
             while (!cancel.IsCancellationRequested)
@@ -1224,7 +1272,7 @@ sealed class BnetHost
     async Task Accept(TcpClient client)
     {
         string ip = ((IPEndPoint?)client.Client.RemoteEndPoint)?.Address.ToString() ?? "0.0.0.0";
-        var session = new PlayerSession(_config, _db, _realms, ip, _devCert);
+        var session = new PlayerSession(_db, _realms, ip, _devCert);
         using (client)
         {
             try

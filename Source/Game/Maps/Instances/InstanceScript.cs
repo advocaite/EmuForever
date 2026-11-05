@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -127,7 +127,7 @@ namespace Game.Maps
         {
             foreach (var data in objectData)
             {
-                Cypher.Assert(!objectInfo.ContainsKey(data.entry));
+                Forever.Assert(!objectInfo.ContainsKey(data.entry));
                 objectInfo[data.entry] = data.type;
             }
         }
@@ -202,20 +202,20 @@ namespace Game.Maps
             }
         }
 
-        enum states { Block, Spawn, ForceBlock };
+        enum SpawnGroupState { Block, Spawn, ForceBlock };
 
         void UpdateSpawnGroups()
         {
             if (_instanceSpawnGroups.Empty())
                 return;
 
-            Dictionary<int, states> newStates = new();
+            Dictionary<int, SpawnGroupState> newStates = new();
             foreach (var info in _instanceSpawnGroups)
             {
                 if (!newStates.ContainsKey(info.SpawnGroupId))
                     newStates[info.SpawnGroupId] = 0;// makes sure there's a BLOCK value in the map
 
-                if (newStates[info.SpawnGroupId] == states.ForceBlock) // nothing will change this
+                if (newStates[info.SpawnGroupId] == SpawnGroupState.ForceBlock) // nothing will change this
                     continue;
 
                 if (((1 << (int)GetBossState(info.BossStateId)) & (int)info.BossStates) == 0)
@@ -226,16 +226,16 @@ namespace Game.Maps
                     continue;
 
                 if (info.Flags.HasAnyFlag(InstanceSpawnGroupFlags.BlockSpawn))
-                    newStates[info.SpawnGroupId] = states.ForceBlock;
+                    newStates[info.SpawnGroupId] = SpawnGroupState.ForceBlock;
 
                 else if (info.Flags.HasAnyFlag(InstanceSpawnGroupFlags.ActivateSpawn))
-                    newStates[info.SpawnGroupId] = states.Spawn;
+                    newStates[info.SpawnGroupId] = SpawnGroupState.Spawn;
             }
 
             foreach (var pair in newStates)
             {
                 int groupId = pair.Key;
-                bool doSpawn = pair.Value == states.Spawn;
+                bool doSpawn = pair.Value == SpawnGroupState.Spawn;
                 if (instance.IsSpawnGroupActive(groupId) == doSpawn)
                     continue; // nothing to do here
                               // if we should spawn group, then spawn it...
@@ -248,7 +248,7 @@ namespace Game.Maps
 
         public BossInfo GetBossInfo(int id)
         {
-            Cypher.Assert(id < bosses.Count);
+            Forever.Assert(id < bosses.Count);
             return bosses[id];
         }
 

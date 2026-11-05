@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Collections;
@@ -60,6 +60,9 @@ namespace Game
 
         public void Dispose()
         {
+            // Saving/removing the player can produce aura, power and combat updates.
+            // A session being destroyed has no client to receive those updates.
+            Volatile.Write(ref _socketCleanupStarted, 1);
             DisposeClassicServices();
             if (_siCreateCompleted != null)
                 CompleteSICreation(ResponseCodes.CharCreateError, ObjectGuid.Empty);
@@ -67,15 +70,7 @@ namespace Game
             if (_player != null)
                 LogoutPlayer(true);
 
-            // - If have unclosed socket, close it
-            for (byte i = 0; i < 2; ++i)
-            {
-                if (m_Socket[i] != null)
-                {
-                    m_Socket[i].CloseSocket();
-                    m_Socket[i] = null;
-                }
-            }
+            CloseClientSockets();
 
             // empty incoming packet queue
             _recvQueue.Writer.TryComplete();
@@ -99,6 +94,7 @@ namespace Game
 
             if (_player != null)
             {
+                _player.ReleaseSelfSIControl();
                 if (!_player.GetLootGUID().IsEmpty())
                     DoLootReleaseAll();
 
@@ -249,6 +245,11 @@ namespace Game
 
         public bool Update(TimeSpan diff, PacketFilter updater)
         {
+            if (Volatile.Read(ref _socketCleanupStarted) != 0)
+                return false;
+
+            if (updater.ProcessUnsafe()) ProcessSIBattlegroundRequests();
+
             if (IsServerControlled)
             {
                 // Database completion and transfers belong to the world update, never a worker.
@@ -257,9 +258,9 @@ namespace Game
                     ProcessQueryCallbacks();
                     if (!forceExit && _player != null)
                     {
-                        if (_player.IsBeingTeleportedFar())
+                        if (_player.IsBeingTeleportedFar()&&!_player.HasPendingTeleportDispatch)
                             HandleMoveWorldportAck();
-                        else if (_player.IsBeingTeleportedNear())
+                        else if (_player.IsBeingTeleportedNear()&&!_player.HasPendingTeleportDispatch)
                             CompleteNearTeleport();
                         // Far transfers clear the visibility-ready flag, just as login does.
                         // A headless player must not wait for an acknowledgement it cannot send.
@@ -272,7 +273,7 @@ namespace Game
             /// If necessary, kick the player because the client didn't send anything for too long
             /// (or they've been idling in character select)
             if (IsConnectionIdle() && !HasPermission(RBACPermissions.IgnoreIdleConnection))
-                m_Socket[(int)ConnectionType.Realm].CloseSocket();
+                m_Socket[(int)ConnectionType.Realm]?.CloseSocket();
 
             WorldPacket firstDelayedPacket = null;
             uint processedPackets = 0;
@@ -305,7 +306,8 @@ namespace Game
                                 }
                                 break;
                             }
-                            else if (_player.IsInWorld && AntiDOS.EvaluateOpcode(packet, currentTime))
+                            else if (_player.IsInWorld && AntiDOS.EvaluateOpcode(packet, currentTime) &&
+                                !(_player.IsSelfSIControlled && IsSelfSIClientInput((ClientOpcodes)packet.GetOpcode())))
                                 handler.Invoke(this, packet);
                             break;
                         case SessionStatus.LoggedinOrRecentlyLogout:
@@ -378,6 +380,19 @@ namespace Game
 
             if (updater.ProcessUnsafe())
             {
+                // Classic 1.60: character list mail data, sent once the character list is shown (see HandleCharEnum)
+                if (_classicCharacterMailData != null)
+                {
+                    if (_classicCharacterMailDataTimer <= diff)
+                    {
+                        if (_player == null)
+                            SendPacket(_classicCharacterMailData);
+                        _classicCharacterMailData = null;
+                    }
+                    else
+                        _classicCharacterMailDataTimer -= diff;
+                }
+
                 if (m_Socket[(int)ConnectionType.Realm] != null && m_Socket[(int)ConnectionType.Realm].IsOpen() && _warden != null)
                     _warden.Update(diff);
 
@@ -398,17 +413,7 @@ namespace Game
                     expireTime -= expireTime > diff ? diff : expireTime;
                     if (expireTime < diff || forceExit || GetPlayer() == null)
                     {
-                        if (m_Socket[(int)ConnectionType.Realm] != null)
-                        {
-                            m_Socket[(int)ConnectionType.Realm].CloseSocket();
-                            m_Socket[(int)ConnectionType.Realm] = null;
-                        }
-
-                        if (m_Socket[(int)ConnectionType.Instance] != null)
-                        {
-                            m_Socket[(int)ConnectionType.Instance].CloseSocket();
-                            m_Socket[(int)ConnectionType.Instance] = null;
-                        }
+                        CloseClientSockets();
                     }
                 }
 
@@ -438,7 +443,7 @@ namespace Game
         public void SendPacket(ServerPacket packet)
         {
             // Observer broadcasts still use the ordinary map visibility system.
-            if (IsServerControlled)
+            if (IsServerControlled || Volatile.Read(ref _socketCleanupStarted) != 0)
                 return;
             if (packet == null)
                 return;
@@ -458,14 +463,25 @@ namespace Game
                 return;
             }
 
-            if (m_Socket[(int)conIdx] == null)
+            WorldSocket socket = Volatile.Read(ref m_Socket[(int)conIdx]);
+            if (socket == null)
             {
-                Log.outError(LogFilter.Network,
-                    $"Prevented sending of {packet.GetOpcode()} to non existent socket {conIdx} to {GetPlayerInfo()}");
+                if (Volatile.Read(ref _socketCleanupStarted) == 0)
+                    Log.outError(LogFilter.Network,
+                        $"Prevented sending of {packet.GetOpcode()} to non existent socket {conIdx} to {GetPlayerInfo()}");
                 return;
             }
 
-            m_Socket[(int)conIdx].SendPacket(packet);
+            socket.SendPacket(packet);
+        }
+
+        void CloseClientSockets()
+        {
+            // Mark teardown before retiring either reference, including sends from
+            // player cleanup or another update thread racing this transition.
+            Volatile.Write(ref _socketCleanupStarted, 1);
+            for (int i = 0; i < m_Socket.Length; ++i)
+                Interlocked.Exchange(ref m_Socket[i], null)?.CloseSocket();
         }
 
         public void AddInstanceConnection(WorldSocket sock) { m_Socket[(int)ConnectionType.Instance] = sock; }
@@ -682,9 +698,9 @@ namespace Game
             return false;
         }
 
-        public void SendNotification(CypherStrings str, params object[] args)
+        public void SendNotification(ForeverStrings str, params object[] args)
         {
-            SendNotification(Global.ObjectMgr.GetCypherString(str), args);
+            SendNotification(Global.ObjectMgr.GetForeverString(str), args);
         }
 
         public void SendNotification(string str, params object[] args)
@@ -748,6 +764,25 @@ namespace Game
         public ObjectGuid GetAccountGUID() { return ObjectGuid.Create(HighGuid.WowAccount, unchecked((uint)GetAccountId())); }
         public string GetAccountName() { return _accountName; }
         public int GetBattlenetAccountId() { return _battlenetAccountId; }
+        public bool HasSecuredBackpack() => WorldConfig.Values[WorldCfg.ClassicSecuredBagSlotsForAll].Bool || _hasAuthenticator;
+
+        // Classic 1.60 experience preset. The client takes it from every character list (EnumCharactersResult) and builds its
+        // default keybindings from it: Classic turns with A/D, Enhanced strafes. Accounts that never sent one get the config default.
+        public bool IsClassicExperiencePreset() => _classicExperiencePreset ?? Framework.Configuration.ConfigMgr.GetDefaultValue("Classic.ExperiencePreset.Classic", false);
+
+        public void SetClassicExperiencePreset(bool classic)
+        {
+            if (_classicExperiencePreset == classic)
+                return;
+
+            _classicExperiencePreset = classic;
+
+            PreparedStatement stmt = LoginDatabase.GetPreparedStatement(LoginStatements.REP_BNET_EXPERIENCE_PRESET);
+            stmt.SetInt32(0, GetBattlenetAccountId());
+            stmt.SetUInt8(1, (byte)(classic ? 1 : 0));
+            DB.Login.Execute(stmt);
+        }
+
         public ObjectGuid GetBattlenetAccountGUID() { return ObjectGuid.Create(HighGuid.BNetAccount, GetBattlenetAccountId()); }
 
         public Player GetPlayer() { return _player; }
@@ -769,7 +804,10 @@ namespace Game
 
         void SetLogoutStartTime(ServerTime requestTime)
         {
-            _logoutTime = requestTime;
+            // Match Trinity's time_t logout countdown. Keeping the fractional
+            // second makes the client's end-of-countdown CANCEL win the race
+            // against expiration, repeatedly restarting background idle logouts.
+            _logoutTime = (ServerTime)(UnixTime64)requestTime;
         }
 
         bool ShouldLogOut(ServerTime currTime)
@@ -872,6 +910,11 @@ namespace Game
 
         void InitializeSessionCallback(SQLQueryHolder<AccountInfoQueryLoad> holder, SQLQueryHolder<AccountInfoQueryLoad> realmHolder)
         {
+            SQLResult secured = holder.GetResult(AccountInfoQueryLoad.AccountSecured);
+            _hasAuthenticator = !secured.IsEmpty() && secured.Read<ulong>(0) != 0;
+            SQLResult experiencePreset = holder.GetResult(AccountInfoQueryLoad.ExperiencePreset);
+            if (!experiencePreset.IsEmpty())
+                _classicExperiencePreset = experiencePreset.Read<byte>(0) != 0;
             LoadAccountData(realmHolder.GetResult(AccountInfoQueryLoad.GlobalAccountDataIndexPerRealm), AccountDataTypeMask.GlobalCacheMask);
             LoadTutorialsData(realmHolder.GetResult(AccountInfoQueryLoad.TutorialsIndexPerRealm));
             _collectionMgr.LoadAccountToys(holder.GetResult(AccountInfoQueryLoad.GlobalAccountToys));
@@ -1004,7 +1047,7 @@ namespace Game
 
         bool IsConnectionIdle()
         {
-            return m_timeOutTime < LoopTime.ServerTime && !m_inQueue;
+            return _player?.IsSelfSIControlled!=true && m_timeOutTime < LoopTime.ServerTime && !m_inQueue;
         }
 
         public int GetRecruiterId() { return recruiterId; }
@@ -1040,6 +1083,7 @@ namespace Game
 
         Milliseconds expireTime;
         bool forceExit;
+        int _socketCleanupStarted;
 
         DosProtection AntiDOS;
         Warden _warden;                                    // Remains NULL if Warden system is not enabled by config
@@ -1088,6 +1132,10 @@ namespace Game
         uint _timeSyncNextCounter;
         Milliseconds _timeSyncTimer;
 
+        // Classic 1.60: SMSG_REGIONWIDE_CHARACTER_MAIL_DATA waits until the character list is shown (HandleCharEnum)
+        RegionwideCharacterMailData _classicCharacterMailData;
+        TimeSpan _classicCharacterMailDataTimer;
+
         CollectionMgr _collectionMgr;
 
         ConnectToKey _instanceConnectKey;
@@ -1096,6 +1144,8 @@ namespace Game
         ServerTime _calendarEventCreationCooldown;
 
         BattlePetMgr _battlePetMgr;
+        bool _hasAuthenticator;
+        bool? _classicExperiencePreset;
 
         AsyncCallbackProcessor<QueryCallback> _queryProcessor = new();
         AsyncCallbackProcessor<TransactionCallback> _transactionCallbacks = new();
@@ -1231,7 +1281,15 @@ namespace Game
     {
         public void Initialize(int accountId, int battlenetAccountId)
         {
-            PreparedStatement stmt = LoginDatabase.GetPreparedStatement(LoginStatements.SEL_ACCOUNT_TOYS);
+            PreparedStatement stmt = LoginDatabase.GetPreparedStatement(LoginStatements.SEL_BNET_ACCOUNT_SECURED);
+            stmt.SetInt32(0, battlenetAccountId);
+            SetQuery(AccountInfoQueryLoad.AccountSecured, stmt);
+
+            stmt = LoginDatabase.GetPreparedStatement(LoginStatements.SEL_BNET_EXPERIENCE_PRESET);
+            stmt.SetInt32(0, battlenetAccountId);
+            SetQuery(AccountInfoQueryLoad.ExperiencePreset, stmt);
+
+            stmt = LoginDatabase.GetPreparedStatement(LoginStatements.SEL_ACCOUNT_TOYS);
             stmt.SetInt32(0, battlenetAccountId);
             SetQuery(AccountInfoQueryLoad.GlobalAccountToys, stmt);
 
@@ -1283,5 +1341,7 @@ namespace Game
         GlobalAccountDataIndexPerRealm,
         TutorialsIndexPerRealm,
         TransmogIllusions,
+        AccountSecured,
+        ExperiencePreset,
     }
 }

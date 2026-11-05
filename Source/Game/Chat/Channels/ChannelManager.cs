@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -8,6 +8,7 @@ using Game.Entities;
 using Game.Networking.Packets;
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 
 namespace Game.Chat
 {
@@ -24,7 +25,7 @@ namespace Game.Chat
         public static void LoadFromDB()
         {
             SpecialLinkedArea = CliDB.AreaTableStorage.LookupByKey(3459);
-            Cypher.Assert(SpecialLinkedArea.HasFlag(AreaFlags.LinkedChatSpecialArea));
+            Forever.Assert(SpecialLinkedArea.HasFlag(AreaFlags.LinkedChatSpecialArea));
 
             if (!WorldConfig.Values[WorldCfg.PreserveCustomChannels].Bool)
             {
@@ -74,7 +75,7 @@ namespace Game.Chat
                     channel.SetAnnounce(dbAnnounce);
                     channel.SetOwnership(dbOwnership);
                     channel.SetPassword(dbPass);
-                    mgr._customChannels.Add(dbName, channel);
+                    mgr._customChannels.TryAdd(dbName.ToLowerInvariant(), channel);
 
                     ++count;
                 } while (result.NextRow());
@@ -136,30 +137,19 @@ namespace Game.Chat
         public Channel GetSystemChannel(int channelId, AreaTableRecord zoneEntry = null)
         {
             ObjectGuid channelGuid = CreateBuiltinChannelGuid(channelId, zoneEntry);
-            var currentChannel = _channels.LookupByKey(channelGuid);
-            if (currentChannel != null)
-                return currentChannel;
-
-            Channel newChannel = new Channel(channelGuid, channelId, _team, zoneEntry);
-            _channels[channelGuid] = newChannel;
-            return newChannel;
+            return _channels.GetOrAdd(channelGuid, guid => new Channel(guid, channelId, _team, zoneEntry));
         }
 
         public Channel CreateCustomChannel(string name)
         {
-            if (_customChannels.ContainsKey(name.ToLower()))
-                return null;
-
             Channel newChannel = new(CreateCustomChannelGuid(), name, _team);
             newChannel.SetDirty();
-
-            _customChannels[name.ToLower()] = newChannel;
-            return newChannel;
+            return _customChannels.TryAdd(name.ToLowerInvariant(), newChannel) ? newChannel : null;
         }
 
         public Channel GetCustomChannel(string name)
         {
-            return _customChannels.LookupByKey(name.ToLower());
+            return _customChannels.LookupByKey(name.ToLowerInvariant());
         }
 
         public Channel GetChannel(int channelId, string name, Player player, bool notify = true, AreaTableRecord zoneEntry = null)
@@ -173,7 +163,7 @@ namespace Game.Chat
             }
             else // custom
             {
-                var channel = _customChannels.LookupByKey(name.ToLower());
+                var channel = _customChannels.LookupByKey(name.ToLowerInvariant());
                 if (channel != null)
                     result = channel;
             }
@@ -197,7 +187,7 @@ namespace Game.Chat
                 return;
 
             if (channel.GetNumPlayers() == 0)
-                _channels.Remove(guid);
+                _channels.TryRemove(guid, out _);
         }
 
         public static void SendNotOnChannelNotify(Player player, string name)
@@ -239,8 +229,8 @@ namespace Game.Chat
             return ObjectGuid.Create(HighGuid.ChatChannel, true, channelEntry.HasFlag(ChatChannelFlags.LinkedChannel), (ushort)zoneId, (byte)(_team == Team.Alliance ? 3 : 5), channelId);
         }
 
-        Dictionary<string, Channel> _customChannels = new();
-        Dictionary<ObjectGuid, Channel> _channels = new();
+        ConcurrentDictionary<string, Channel> _customChannels = new();
+        ConcurrentDictionary<ObjectGuid, Channel> _channels = new();
         Team _team;
         ObjectGuidGenerator _guidGenerator;
 

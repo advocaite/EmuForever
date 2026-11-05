@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -36,7 +36,7 @@ namespace Game
             if (!GetPlayer().GetBGAccessByLevel(bgTypeId))
             {
                 // temp, must be gossip message...
-                SendNotification(CypherStrings.YourBgLevelReqError);
+                SendNotification(ForeverStrings.YourBgLevelReqError);
                 return;
             }
 
@@ -67,7 +67,7 @@ namespace Game
             BattlemasterListRecord battlemasterListEntry = CliDB.BattlemasterListStorage.LookupByKey((int)bgQueueTypeId.BattlemasterListId);
             if (Global.DisableMgr.IsDisabledFor(DisableType.Battleground, (int)bgQueueTypeId.BattlemasterListId, null) || battlemasterListEntry.HasFlag(BattlemasterListFlags.Disabled))
             {
-                GetPlayer().SendSysMessage(CypherStrings.BgDisabled);
+                GetPlayer().SendSysMessage(ForeverStrings.BgDisabled);
                 return;
             }
 
@@ -318,6 +318,13 @@ namespace Game
             {
                 Log.outDebug(LogFilter.Battleground, "CMSG_BATTLEFIELD_PORT {0} Slot: {1}, Unk: {2}, Time: {3}, AcceptedInvite: {4}. Cant find BG with id {5}!",
                     GetPlayerInfo(), battlefieldPort.Ticket.Id, battlefieldPort.Ticket.Type, battlefieldPort.Ticket.JoinTime, battlefieldPort.AcceptedInvite, ginfo.IsInvitedToBGInstanceGUID);
+
+                // the instance is gone: drop the dead invite so the player is not left in a queue he can neither enter nor rejoin
+                BattlefieldStatusNone battlefieldStatusNone = new();
+                battlefieldStatusNone.Ticket = battlefieldPort.Ticket;
+                SendPacket(battlefieldStatusNone);
+                GetPlayer().RemoveBattlegroundQueueId(bgQueueTypeId);
+                bgQueue.RemovePlayer(GetPlayer().GetGUID(), true);
                 return;
             }
             else if (bg != null)
@@ -332,7 +339,7 @@ namespace Game
             if (battlefieldPort.AcceptedInvite && bgQueue.GetQueueId().TeamSize == 0)
             {
                 //if player is trying to enter Battleground(not arena!) and he has deserter debuff, we must just remove him from queue
-                if (!GetPlayer().IsDeserter())
+                if (GetPlayer().IsDeserter())
                 {
                     // send bg command result to show nice message
                     BattlefieldStatusFailed battlefieldStatus;
@@ -423,7 +430,7 @@ namespace Game
 
                 Log.outDebug(LogFilter.Battleground, 
                     $"Battleground: player {_player.GetName()} ({_player.GetGUID()}) " +
-                    $"left queue for bgtype { bg.GetTypeID()}, queue {bgQueueTypeId}.");
+                    $"left queue for bgtype {bgTypeId}, queue {bgQueueTypeId}.");
             }
         }
 
@@ -523,7 +530,7 @@ namespace Game
 
             if (Global.DisableMgr.IsDisabledFor(DisableType.Battleground, (int)BattlegroundTypeId.AA, null))
             {
-                GetPlayer().SendSysMessage(CypherStrings.ArenaDisabled);
+                GetPlayer().SendSysMessage(ForeverStrings.ArenaDisabled);
                 return;
             }
 

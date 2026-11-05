@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -38,7 +38,7 @@ namespace Game.DataStorage
         public int[] ReputationRaceMask4 = new int[2];
 
         #region Properties
-        public RaceMask ReputationRaceMask(int index) => (RaceMask)(index switch { 0 => ReputationRaceMask1, 1 => ReputationRaceMask2, 2 => ReputationRaceMask3, _ => ReputationRaceMask4 })[0];
+        public RaceMask ReputationRaceMask(int index) => (index switch { 0 => ReputationRaceMask1, 1 => ReputationRaceMask2, 2 => ReputationRaceMask3, _ => ReputationRaceMask4 }).ToRaceMask();
         public ClassMask ReputationClassMask(int index) => (ClassMask)_reputationClassMask[index];
         #endregion
 
@@ -51,7 +51,7 @@ namespace Game.DataStorage
     {
         public int Id;
         public ushort Faction;
-        private int _flags;
+        private int _flags = default;
         public byte FactionGroup;
         public byte FriendGroup;
         public byte EnemyGroup;

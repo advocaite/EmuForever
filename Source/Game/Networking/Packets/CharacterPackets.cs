@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Collections;
@@ -19,6 +19,34 @@ namespace Game.Networking.Packets
         public override void Read() { }
     }
 
+    // Classic 1.60 C_GameRules.SetForeverExperiencePreset: the glue screen sends both messages, the first one also when the
+    // character list disagrees with the preset picked in this client session. Layouts read from the 70532 client serializers.
+    public class SetForeverExperiencePreset : ClientPacket
+    {
+        public SetForeverExperiencePreset(WorldPacket packet) : base(packet) { }
+
+        public override void Read()
+        {
+            Unknown = _worldPacket.ReadUInt32();
+            Classic = _worldPacket.HasBit();
+        }
+
+        public uint Unknown;
+        public bool Classic;
+    }
+
+    public class SelectForeverExperiencePreset : ClientPacket
+    {
+        public SelectForeverExperiencePreset(WorldPacket packet) : base(packet) { }
+
+        public override void Read()
+        {
+            Classic = _worldPacket.HasBit();
+        }
+
+        public bool Classic;
+    }
+
     public class EnumCharactersResult : ServerPacket
     {
         public EnumCharactersResult() : base(ServerOpcodes.EnumCharactersResult) { }
@@ -27,7 +55,7 @@ namespace Game.Networking.Packets
         {
             // Forever layout: TC EnumCharactersResult::Write
             _worldPacket.WriteBit(Success);
-            _worldPacket.WriteBit(false); // Realmless
+            _worldPacket.WriteBit(Realmless);
             _worldPacket.WriteBit(IsDeletedCharacters);
             _worldPacket.WriteBit(IsNewPlayerRestrictionSkipped);
             _worldPacket.WriteBit(IsNewPlayerRestricted);
@@ -35,9 +63,9 @@ namespace Game.Networking.Packets
             _worldPacket.WriteBit(IsTrialAccountRestricted);
             _worldPacket.WriteBit(false); // IsAccountLapsedPlayer
             _worldPacket.WriteBit(DisabledClassesMask.HasValue);
-            _worldPacket.WriteBit(false); // ForceCharacterListSort
+            _worldPacket.WriteBit(ClassicExperiencePreset); // TC ForceCharacterListSort; testing whether the client reads the preset here
             _worldPacket.WriteInt32(Characters.Count);
-            _worldPacket.WriteInt32(0); // RegionwideCharacters
+            _worldPacket.WriteInt32(RegionwideCharacters.Count);
             _worldPacket.WriteInt32(MaxCharacterLevel);
             _worldPacket.WriteInt32(RaceUnlockData.Count);
             _worldPacket.WriteInt32(UnlockedConditionalAppearances.Count);
@@ -48,6 +76,9 @@ namespace Game.Networking.Packets
                 _worldPacket.WriteInt32(DisabledClassesMask.Value);
 
             foreach (CharacterInfo charInfo in Characters)
+                charInfo.Write(_worldPacket);
+
+            foreach (RegionwideCharacterListEntry charInfo in RegionwideCharacters)
                 charInfo.Write(_worldPacket);
 
             foreach (RaceUnlock raceUnlock in RaceUnlockData)
@@ -61,16 +92,19 @@ namespace Game.Networking.Packets
         }
 
         public bool Success;
+        public bool Realmless;
         public bool IsDeletedCharacters; // used for character undelete list
         public bool IsNewPlayerRestrictionSkipped; // allows client to skip new player restrictions
         public bool IsNewPlayerRestricted; // forbids using level boost and class trials
         public bool IsNewPlayer; // forbids hero classes and allied races
         public bool IsTrialAccountRestricted;
+        public bool ClassicExperiencePreset;
 
         public int MaxCharacterLevel = 1;
         public int? DisabledClassesMask = new();
 
         public List<CharacterInfo> Characters = new(); // all characters on the list
+        public List<RegionwideCharacterListEntry> RegionwideCharacters = new();
         public List<RaceUnlock> RaceUnlockData = new(); //
         public List<UnlockedConditionalAppearance> UnlockedConditionalAppearances = new();
         public List<RaceLimitDisableInfo> RaceLimitDisables = new();
@@ -162,6 +196,12 @@ namespace Game.Networking.Packets
 
             public void Write(WorldPacket data)
             {
+                WriteBasic(data);
+                WriteRestrictionsAndMails(data);
+            }
+
+            public void WriteBasic(WorldPacket data)
+            {
                 // CharacterInfoBasic (1.60.1)
                 data.WritePackedGuid(Guid);
                 data.WriteUInt32(Global.WorldMgr.GetVirtualRealmAddress());
@@ -211,16 +251,21 @@ namespace Game.Networking.Packets
                 foreach (ChrCustomizationChoice customization in Customizations)
                     customization.Write(data);
 
-                string surname = Global.CharacterCacheStorage.GetCharacterSurnameByGuid(Guid);
-                data.WriteBits(Name.GetByteCount(), 6);
+                var identity = Global.CharacterCacheStorage.GetCharacterCacheByGuid(Guid);
+                string surname = identity?.Surname ?? string.Empty;
+                string firstName = identity?.FirstName ?? Name;
+                data.WriteBits(firstName.GetByteCount(), 6);
                 data.WriteBits(surname.GetByteCount(), 6);
                 data.WriteBit(FirstLogin);
                 data.WriteBit(true); // RealmInfoFound
                 data.WriteBit(false); // IsRealmOffline
                 data.FlushBits();
-                data.WriteString(Name);
+                data.WriteString(firstName);
                 data.WriteString(surname);
+            }
 
+            public void WriteRestrictionsAndMails(WorldPacket data)
+            {
                 // CharacterRestrictionAndMailData
                 data.WriteBit(BoostInProgress);
                 data.WriteBit(RpeResetAvailable);
@@ -309,6 +354,35 @@ namespace Game.Networking.Packets
             }
         }
 
+        // Classic 1.60: the official server sends every character as a regionwide entry (Realmless, no realm entries; TC sniff
+        // 70235). Only this entry has money; the character select tooltip shows it with the two primary professions.
+        public class RegionwideCharacterListEntry
+        {
+            public RegionwideCharacterListEntry(CharacterInfo basic)
+            {
+                Basic = basic;
+            }
+
+            public void Write(WorldPacket data)
+            {
+                Basic.WriteBasic(data);
+                data.WriteUInt64(Money);
+                data.WriteFloat(AvgEquippedItemLevel);
+                data.WriteFloat(CurrentSeasonMythicPlusOverallScore);
+                data.WriteInt32(CurrentSeasonBestPvpRating);
+                data.WriteInt8(PvpRatingBracket);
+                data.WriteInt16(PvpRatingAssociatedSpecID);
+            }
+
+            public CharacterInfo Basic;
+            public ulong Money;
+            public float AvgEquippedItemLevel;
+            public float CurrentSeasonMythicPlusOverallScore;
+            public int CurrentSeasonBestPvpRating;
+            public sbyte PvpRatingBracket = -1;
+            public short PvpRatingAssociatedSpecID;
+        }
+
         public struct RaceUnlock
         {
             public void Write(WorldPacket data)
@@ -386,25 +460,93 @@ namespace Game.Networking.Packets
 
         public override void Write()
         {
-            // Classic 1.60.1 uses this response to release the pending character list.
+            // Our map puts this on wire 0x470365, which TC (working with 70532) numbers SMSG_RECENT_ALLY_LIST, the Allies tab list.
+            // Keep it all zero: 0x08ECBD10 here was read as a list size and the client died at character select (2026-10-25).
+            // TC's "release" values go to AccountItemCollectionData (wire 0x470363 = TC's RECENT_ALLY_DATA_RESPONSE).
             _worldPacket.WriteUInt32(0);
             _worldPacket.WriteUInt8(0);
             _worldPacket.WriteUInt32(0);
         }
     }
 
-    public class AccountItemCollectionData : ServerPacket
+    // Classic 1.60: per character restrictions, sent right after the enum result as on the official server (TC, sniff 70205).
+    public class RegionwideCharacterRestrictionsData : ServerPacket
     {
-        public AccountItemCollectionData() : base(ServerOpcodes.AccountItemCollectionData) { }
+        public RegionwideCharacterRestrictionsData() : base(ServerOpcodes.RegionwideCharacterRestrictionsData) { }
 
         public override void Write()
         {
-            // TrinityCore Forever tree layout (CollectionPackets.cpp): Unknown1110_1, Type, item count, items, Unknown1110_2 bit.
-            _worldPacket.WriteUInt32(0);    // Unknown1110_1
-            _worldPacket.WriteUInt8(0);     // Type
-            _worldPacket.WriteUInt32(0);    // Items (int32 ID, uint8 Type, int64 Unknown1110, int32 Flags each) - none sent
-            _worldPacket.WriteBit(false);   // Unknown1110_2
-            _worldPacket.FlushBits();
+            _worldPacket.WriteInt32(Characters.Count);
+            foreach (ObjectGuid guid in Characters)
+            {
+                _worldPacket.WriteBit(false);
+                _worldPacket.WriteBit(false);
+                _worldPacket.FlushBits();
+                _worldPacket.WritePackedGuid(guid);
+                _worldPacket.WriteUInt32(0);
+                _worldPacket.WriteUInt32(10);
+            }
+        }
+
+        public List<ObjectGuid> Characters = new();
+    }
+
+    // Classic 1.60: unread mail of each character; the character list shows a mail icon with the senders (TC, sniff 70205).
+    // Per character: 2 bits (own byte), packed guid, sender count, sender type count, types, 6-bit name lengths (with the
+    // terminating zero), names. With the 2 bits after the entry the client read past the end and crashed (TC 2026-10-03).
+    public class RegionwideCharacterMailData : ServerPacket
+    {
+        public RegionwideCharacterMailData() : base(ServerOpcodes.RegionwideCharacterMailData) { }
+
+        public override void Write()
+        {
+            _worldPacket.WriteInt32(Characters.Count);
+            foreach (var (guid, senders) in Characters)
+            {
+                _worldPacket.WriteBit(false);
+                _worldPacket.WriteBit(false);
+                _worldPacket.FlushBits();
+                _worldPacket.WritePackedGuid(guid);
+                _worldPacket.WriteInt32(senders.Count);
+                _worldPacket.WriteInt32(senders.Count);
+                foreach (var (type, _) in senders)
+                    _worldPacket.WriteUInt32(type);
+                foreach (var (_, name) in senders)
+                    _worldPacket.WriteBits(name.GetByteCount() + 1, 6);
+                _worldPacket.FlushBits();
+                foreach (var (_, name) in senders)
+                    _worldPacket.WriteCString(name);
+            }
+        }
+
+        public List<(ObjectGuid Guid, List<(uint Type, string Name)> Senders)> Characters = new();
+    }
+
+    public class AccountItemCollectionData : ServerPacket
+    {
+        readonly uint _clientBuild;
+
+        public AccountItemCollectionData(uint clientBuild = 0) : base(ServerOpcodes.AccountItemCollectionData)
+        {
+            _clientBuild = clientBuild;
+        }
+
+        public override void Write()
+        {
+            // Wire 0x470363 is what TC (working with 70532) sends as SMSG_RECENT_ALLY_DATA_RESPONSE: 0x08ECBD10, 7, 0 as in the
+            // official sniffs (70235). Character select waits for item collection list type 7 (Connection.log), and with 0, 0, 0 TC
+            // saw the Social window keep its old layout (no Allies tabs).
+            _worldPacket.WriteUInt32(0x08ECBD10);
+            _worldPacket.WriteUInt8(7);     // collectionListType
+            _worldPacket.WriteUInt32(0);    // item count
+
+            // 70755's reader (0x6201F0..0x620349) consumes this flag even for
+            // an empty collection. Omitting it leaves character select waiting.
+            if (ClassicOpcodeMap.Uses70755WireProfile(_clientBuild))
+            {
+                _worldPacket.WriteBit(false);
+                _worldPacket.FlushBits();
+            }
         }
     }
 
@@ -731,7 +873,7 @@ namespace Game.Networking.Packets
 
         public override void Write()
         {
-            Cypher.Assert(UndeleteInfo != null);
+            Forever.Assert(UndeleteInfo != null);
             _worldPacket.WriteInt32(UndeleteInfo.ClientToken);
             _worldPacket.WriteUInt32((uint)Result);
             _worldPacket.WritePackedGuid(UndeleteInfo.CharacterGuid);

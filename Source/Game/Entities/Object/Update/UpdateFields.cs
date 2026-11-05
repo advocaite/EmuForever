@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -166,7 +166,7 @@ namespace Game.Entities
         }
     }
 
-    // Classic 1.60.1 ItemEnchantment layout (TrinityCore-forever UF::ItemEnchantment).
+    // Classic 1.60.1 ItemEnchantment layout (EmuForever-forever UF::ItemEnchantment).
     public class ItemEnchantment : HasChangesMask
     {
         public UpdateField<int> ID = new(0, 1);
@@ -497,7 +497,7 @@ namespace Game.Entities
             changesMask.AND(allowedMaskForTarget);
         }
 
-        // Generated from TrinityCore-forever UF::ItemData::WriteUpdate (genupdate.py): reference bit numbering.
+        // Generated from EmuForever-forever UF::ItemData::WriteUpdate (genupdate.py): reference bit numbering.
         const int RefChangeMaskLength = 41;
 
         static UpdateMask ToRefMask(UpdateMask ours)
@@ -715,7 +715,7 @@ namespace Game.Entities
         }
     }
 
-    // Classic 1.60.1 ContainerData layout (TrinityCore-forever UF::ContainerData): 98 slots.
+    // Classic 1.60.1 ContainerData layout (EmuForever-forever UF::ContainerData): 98 slots.
     public class ContainerData : HasChangesMask
     {
         public UpdateField<int> NumSlots = new(0, 1);
@@ -1329,7 +1329,7 @@ namespace Game.Entities
             changesMask.AND(allowedMaskForTarget);
         }
 
-        // Generated from TrinityCore-forever UF::UnitData::WriteUpdate (genupdate.py): reference bit numbering.
+        // Generated from EmuForever-forever UF::UnitData::WriteUpdate (genupdate.py): reference bit numbering.
         const int RefChangeMaskLength = 233;
 
         public void WriteUpdate(WorldPacket data, UpdateMask ourChangesMask, bool ignoreNestedChangesMask, Unit owner, Player receiver)
@@ -2413,7 +2413,7 @@ namespace Game.Entities
         public int ChrCustomizationChoiceID;
     }
 
-    // Classic 1.60.1 QuestLog layout (TrinityCore-forever UF::QuestLog).
+    // Classic 1.60.1 QuestLog layout (EmuForever-forever UF::QuestLog).
     public class QuestLog : HasChangesMask
     {
         public UpdateField<int> QuestID = new(0, 1);
@@ -2614,7 +2614,8 @@ namespace Game.Entities
         public UpdateFieldArray<VisibleItem> VisibleItems = new(19, 61, 62);
         public UpdateFieldArray<float> AvgItemLevel = new(6, 81, 82);
         public UpdateFieldArray<uint> Field_3120 = new(19, 88, 89);
-        static int changeMaskLength = 108;
+        public UpdateField<ulong> GuildClubMemberID = new(0, 108);
+        static int changeMaskLength = 109;
 
         public PlayerData() : base(0, TypeId.Player, changeMaskLength) { }
 
@@ -2664,14 +2665,14 @@ namespace Game.Entities
 
         public void WriteCreate(WorldPacket data, UpdateFieldFlag fieldVisibilityFlags, Player owner, Player receiver)
         {
-            // Classic 1.60.1 PlayerData create layout (TrinityCore-forever UF::PlayerData::WriteCreate).
+            // Classic 1.60.1 PlayerData create layout (EmuForever-forever UF::PlayerData::WriteCreate).
             // Fields this core does not model are written with the reference server's defaults.
             uint superDistrictId = (uint)Framework.Configuration.ConfigMgr.GetDefaultValue("SuperDistrictID", 2);
 
             data.WritePackedGuid(DuelArbiter);
             data.WritePackedGuid(WowAccount);
             data.WritePackedGuid(BnetAccount);
-            data.WriteUInt64(0); // GuildClubMemberID
+            data.WriteUInt64(GuildClubMemberID);
             data.WritePackedGuid(LootTargetGUID);
             data.WriteUInt32((uint)PlayerFlags.GetValue());
             data.WriteUInt32((uint)PlayerFlagsEx.GetValue());
@@ -2767,8 +2768,10 @@ namespace Game.Entities
             for (int i = 0; i < VisualItemReplacements.Size(); ++i)
                 data.WriteInt32(VisualItemReplacements[i]);
 
-            string name = owner.GetName() ?? "";
-            string surname = Global.CharacterCacheStorage.GetCharacterSurnameByGuid(owner.GetGUID()) ?? "";
+            // These are separate client identity fields, just like the name
+            // query. A full name here is displayed with the surname twice.
+            string name = owner.GetFirstName() ?? "";
+            string surname = owner.GetSurname();
             data.WriteBits(name.GetByteCount(), 6);
             data.WriteBits(surname.GetByteCount(), 9);
             if (fieldVisibilityFlags.HasFlag(UpdateFieldFlag.PartyMember))
@@ -2782,7 +2785,7 @@ namespace Game.Entities
 
         public void WriteUpdate(WorldPacket data, UpdateFieldFlag fieldVisibilityFlags, Player owner, Player receiver)
         {
-            UpdateMask allowedMaskForTarget = new(changeMaskLength, [0xFFFFFFFFu, 0xE0000007u, 0xFFFFFFFFu, 0x00000FFFu]);
+            UpdateMask allowedMaskForTarget = new(changeMaskLength, [0xFFFFFFFFu, 0xE0000007u, 0xFFFFFFFFu, 0x00001FFFu]);
             AppendAllowedFieldsMaskForFlag(allowedMaskForTarget, fieldVisibilityFlags);
             WriteUpdate(data, _changesMask & allowedMaskForTarget, false, owner, receiver);
         }
@@ -2795,17 +2798,18 @@ namespace Game.Entities
 
         public void FilterDisallowedFieldsMaskForFlag(UpdateMask changesMask, UpdateFieldFlag fieldVisibilityFlags)
         {
-            UpdateMask allowedMaskForTarget = new(changeMaskLength, [0xFFFFFFFFu, 0xE0000007u, 0xFFFFFFFFu, 0x00000FFFu]);
+            UpdateMask allowedMaskForTarget = new(changeMaskLength, [0xFFFFFFFFu, 0xE0000007u, 0xFFFFFFFFu, 0x00001FFFu]);
             AppendAllowedFieldsMaskForFlag(allowedMaskForTarget, fieldVisibilityFlags);
             changesMask.AND(allowedMaskForTarget);
         }
 
-        // Generated from TrinityCore-forever UF::PlayerData::WriteUpdate (genupdate.py): reference bit numbering.
+        // Generated from EmuForever-forever UF::PlayerData::WriteUpdate (genupdate.py): reference bit numbering.
         const int RefChangeMaskLength = 326;
 
         static UpdateMask ToRefMask(UpdateMask ours)
         {
             UpdateMask r = new(RefChangeMaskLength);
+            if (ours[108]) { r.Set(0); r.Set(12); }
             if (ours[1]) { r.Set(0); r.Set(3); }
             if (ours[2]) { r.Set(0); r.Set(6); }
             if (ours[3]) { r.Set(0); r.Set(8); }
@@ -2936,6 +2940,8 @@ namespace Game.Entities
                 {
                     data.WritePackedGuid(BnetAccount);
                 }
+                if (changesMask[12])
+                    data.WriteUInt64(GuildClubMemberID);
                 if (changesMask[13])
                 {
                     data.WritePackedGuid(LootTargetGUID);
@@ -3108,6 +3114,7 @@ namespace Game.Entities
             ClearChangesMask(PlayerFlagsEx);
 
             ClearChangesMask(GuildRankID);
+            ClearChangesMask(GuildClubMemberID);
             ClearChangesMask(GuildDeleteDate);
             ClearChangesMask(GuildLevel);
             ClearChangesMask(NumBankSlots);
@@ -3171,7 +3178,7 @@ namespace Game.Entities
             }
         }
 
-        // Generated from TrinityCore-forever UF::SkillInfo::WriteUpdate (genupdate.py): reference bit numbering.
+        // Generated from EmuForever-forever UF::SkillInfo::WriteUpdate (genupdate.py): reference bit numbering.
         const int RefChangeMaskLength = 2101;
 
         static UpdateMask ToRefMask(UpdateMask ours)
@@ -3555,7 +3562,7 @@ namespace Game.Entities
             data.WriteUInt32(CompletionCount);
         }
 
-        // Generated from TrinityCore-forever UF::CompletedProject::WriteUpdate (genupdate.py): reference bit numbering.
+        // Generated from EmuForever-forever UF::CompletedProject::WriteUpdate (genupdate.py): reference bit numbering.
         const int RefChangeMaskLength = 4;
 
         static UpdateMask ToRefMask(UpdateMask ours)
@@ -3915,7 +3922,7 @@ namespace Game.Entities
             data.WriteString(Name);
         }
 
-        // Generated from TrinityCore-forever UF::StablePetInfo::WriteUpdate (genupdate.py): reference bit numbering.
+        // Generated from EmuForever-forever UF::StablePetInfo::WriteUpdate (genupdate.py): reference bit numbering.
         const int RefChangeMaskLength = 13;
 
         static UpdateMask ToRefMask(UpdateMask ours)
@@ -4105,6 +4112,42 @@ namespace Game.Entities
         }
     }
 
+    public class BankTabSettings : HasChangesMask
+    {
+        public UpdateFieldString Name = new(0, 0);
+        public UpdateFieldString Icon = new(1, 1);
+        public UpdateFieldString Description = new(2, 2);
+        public UpdateField<int> DepositFlags = new(3, 3);
+        public BankTabSettings() : base(4) { }
+
+        public void WriteCreate(WorldPacket data, Player owner, Player receiver)
+        {
+            data.WriteBits(Name.GetValue().GetByteCount(), 7);
+            data.WriteBits(Icon.GetValue().GetByteCount(), 9);
+            data.WriteBits(Description.GetValue().GetByteCount(), 14);
+            data.WriteInt32(DepositFlags);
+            data.WriteString(Name); data.WriteString(Icon); data.WriteString(Description);
+        }
+
+        public void WriteUpdate(WorldPacket data, bool ignoreChangesMask, Player owner, Player receiver)
+        {
+            UpdateMask mask = new(4);
+            for (int i = 0; i < 4; ++i)
+                if (ignoreChangesMask || _changesMask[i]) mask.Set(i);
+            data.WriteBits(mask.GetBlock(0), 4);
+            if (mask[0]) data.WriteBits(Name.GetValue().GetByteCount(), 7);
+            if (mask[1]) data.WriteBits(Icon.GetValue().GetByteCount(), 9);
+            if (mask[2]) data.WriteBits(Description.GetValue().GetByteCount(), 14);
+            data.FlushBits();
+            if (mask[3]) data.WriteInt32(DepositFlags);
+            if (mask[0]) data.WriteString(Name);
+            if (mask[1]) data.WriteString(Icon);
+            if (mask[2]) data.WriteString(Description);
+        }
+
+        public override void ClearChangesMask() { _changesMask.ResetAll(); }
+    }
+
     public class ActivePlayerData : HasChangesMask
     {        
         public UpdateField<bool> SortBagsRightToLeft = new(0, 1);
@@ -4245,7 +4288,9 @@ namespace Game.Entities
         public UpdateFieldArray<ulong> QuestCompleted = new(875, 636, 637);
         public UpdateFieldArray<int> GlyphSlots = new(6, 1512, 1513);
         public UpdateFieldArray<int> Glyphs = new(6, 1512, 1519);
-        static int changeMaskLength = 1525;
+        public UpdateField<byte> NumCharacterBankTabs = new(1525, 1526);
+        public DynamicUpdateField<BankTabSettings> CharacterBankTabSettings = new(1525, 1527);
+        static int changeMaskLength = 1528;
 
         public static int ExploredZonesSize;
         public static int ExploredZonesBits;
@@ -4263,7 +4308,7 @@ namespace Game.Entities
 
         public void WriteCreate(WorldPacket data, UpdateFieldFlag fieldVisibilityFlags, Player owner, Player receiver)
         {
-            // Classic 1.60.1 ActivePlayerData create layout (TrinityCore-forever UF::ActivePlayerData::WriteCreate).
+            // Classic 1.60.1 ActivePlayerData create layout (EmuForever-forever UF::ActivePlayerData::WriteCreate).
             // This core keeps the WotLK field model; fields it does not have are written with the reference defaults.
             for (int i = 0; i < ClassicInventorySlots.Count; ++i)
                 data.WritePackedGuid(GetClassicInvSlot(i));
@@ -4377,7 +4422,7 @@ namespace Game.Entities
             data.WriteInt32(HonorNextLevel);
             data.WriteInt32(PerksProgramCurrency);
             data.WriteUInt8(owner.m_playerData.NumBankSlots); // NumBankSlots lives in PlayerData in this core
-            data.WriteUInt8(0); // NumCharacterBankTabs
+            data.WriteUInt8(NumCharacterBankTabs);
             data.WriteUInt8(0); // NumAccountBankTabs
             for (int i = 0; i < 1; ++i)
             {
@@ -4538,7 +4583,7 @@ namespace Game.Entities
             data.WriteBit(false); // HasPerksProgramPendingReward
             data.WriteBit(false); // QuestSession
             data.WriteBit(PetStable.HasValue());
-            data.WriteBits(0, 4); // CharacterBankTabSettings (4 bits in Classic)
+            data.WriteBits(CharacterBankTabSettings.Size(), 4);
             data.WriteBits(0, 3); // AccountBankTabSettings
             data.WriteBit(false); // WalkInData
             data.WriteBit(false); // ChallengeModeData
@@ -4546,6 +4591,8 @@ namespace Game.Entities
             data.FlushBits();
             if (PetStable.HasValue())
                 WriteClassicStableInfo(data, PetStable.GetValue());
+            foreach (var settings in CharacterBankTabSettings)
+                settings.WriteCreate(data, owner, receiver);
         }
 
         // The item in client inventory slot clientSlot (see ClassicInventorySlots for the two numberings).
@@ -4724,12 +4771,14 @@ namespace Game.Entities
             WriteUpdate(data, _changesMask, false, owner, receiver);
         }
 
-        // Generated from TrinityCore-forever UF::ActivePlayerData::WriteUpdate (genupdate.py): reference bit numbering.
+        // Generated from EmuForever-forever UF::ActivePlayerData::WriteUpdate (genupdate.py): reference bit numbering.
         const int RefChangeMaskLength = 402;
 
         static UpdateMask ToRefMask(UpdateMask ours)
         {
             UpdateMask r = new(RefChangeMaskLength);
+            if (ours[1526]) { r.Set(102); r.Set(133); }
+            if (ours[1527]) { r.Set(32); r.Set(48); }
             if (ours[1]) { r.Set(0); r.Set(4); }
             if (ours[2]) { r.Set(0); r.Set(5); }
             if (ours[3]) { r.Set(0); r.Set(7); }
@@ -5308,10 +5357,19 @@ namespace Game.Entities
             if (changesMask[32])
             {
                 bool classicBankTabs = changesMask[48] || changesMask[49];
-                if (classicBankTabs)
+                if (changesMask[48])
                 {
-                    data.FlushBits();
+                    if (!ignoreNestedChangesMask)
+                        CharacterBankTabSettings.WriteUpdateMask(data, 4);
+                    else
+                        WriteCompleteDynamicFieldUpdateMask(CharacterBankTabSettings.Size(), data, 4);
                 }
+                if (classicBankTabs)
+                    data.FlushBits();
+                if (changesMask[48])
+                    for (int i = 0; i < CharacterBankTabSettings.Size(); ++i)
+                        if (CharacterBankTabSettings.HasChanged(i) || ignoreNestedChangesMask)
+                            CharacterBankTabSettings[i].WriteUpdate(data, ignoreNestedChangesMask, owner, receiver);
                 if (changesMask[56])
                 {
                     data.WritePackedGuid(FarsightObject);
@@ -5598,6 +5656,8 @@ namespace Game.Entities
                 {
                     data.WriteInt32((int)PerksProgramCurrency.GetValue());
                 }
+                if (changesMask[133])
+                    data.WriteUInt8(NumCharacterBankTabs);
             }
             if (changesMask[134])
             {
@@ -5918,6 +5978,8 @@ namespace Game.Entities
             ClearChangesMask(QuestCompleted);
             ClearChangesMask(GlyphSlots);
             ClearChangesMask(Glyphs);
+            ClearChangesMask(NumCharacterBankTabs);
+            ClearChangesMask(CharacterBankTabSettings);
             _changesMask.ResetAll();
         }
     }
@@ -6001,7 +6063,7 @@ namespace Game.Entities
             WriteUpdate(data, _changesMask, false, owner, receiver);
         }
 
-        // Generated from TrinityCore-forever UF::GameObjectData::WriteUpdate (genupdate.py): reference bit numbering.
+        // Generated from EmuForever-forever UF::GameObjectData::WriteUpdate (genupdate.py): reference bit numbering.
         const int RefChangeMaskLength = 27;
 
         static UpdateMask ToRefMask(UpdateMask ours)

@@ -1,4 +1,4 @@
-// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -49,6 +49,7 @@ namespace Game.Spells
         [SpellEffectHandler(SpellEffectName.Unk276)]
         void EffectUnused() { }
 
+        [SpellEffectHandler(SpellEffectName.ResurrectNew)]
         void EffectResurrectNew()
         {
             if (effectHandleMode != SpellEffectHandleMode.HitTarget)
@@ -1154,7 +1155,7 @@ namespace Game.Spells
                     return;
             }
 
-            Cypher.Assert(dynObjAura == null);
+            Forever.Assert(dynObjAura == null);
 
             float radius = effectInfo.CalcRadius(unitCaster);
 
@@ -1183,7 +1184,7 @@ namespace Game.Spells
             else
                 return;
 
-            Cypher.Assert(dynObjAura.GetDynobjOwner() != null);
+            Forever.Assert(dynObjAura.GetDynobjOwner() != null);
             dynObjAura._ApplyEffectForTargets(effectInfo.EffectIndex);
         }
 
@@ -1230,6 +1231,19 @@ namespace Game.Spells
                 }
                 default:
                     break;
+            }
+
+            // Classic 1.60 (game rule 112): combo points belong to one target. The client shows them and allows finishers only while
+            // UnitData ClassicComboTarget is the current target (official sniff: set when Sinister Strike awards the first point), and
+            // building points on another target starts over from zero (TC-forever)
+            if (power == PowerType.ComboPoints && unitTarget == unitCaster && unitCaster.IsPlayer())
+            {
+                Unit comboTarget = m_targets.GetUnitTarget();
+                if (comboTarget != null && comboTarget != unitCaster && unitCaster.GetClassicComboTarget() != comboTarget.GetGUID())
+                {
+                    unitCaster.SetPower(PowerType.ComboPoints, 0);
+                    unitCaster.SetClassicComboTarget(comboTarget.GetGUID());
+                }
             }
 
             unitCaster.EnergizeBySpell(unitTarget, m_spellInfo, damage, power);
@@ -2395,7 +2409,7 @@ namespace Game.Spells
                     if (OldSummon.IsDead())
                         return;
 
-                    Cypher.Assert(OldSummon.GetMap() == owner.GetMap());
+                    Forever.Assert(OldSummon.GetMap() == owner.GetMap());
 
                     float px, py, pz;
                     owner.GetClosePoint(out px, out py, out pz, OldSummon.GetCombatReach());
@@ -4389,6 +4403,7 @@ namespace Game.Spells
 
             go.SetRespawnTime(duration > 0 ? duration : TimeSpan.Zero);
             go.SetOwnerGUID(unitCaster.GetGUID());
+            go.SetLevel(unitCaster.GetLevel());     // Classic 1.60: objects placed by players (bobbers, campfires, camp features) carry the owner's level (official sniff)
             go.SetSpellId(m_spellInfo.Id);
 
             ExecuteLogEffectSummonObject(effectInfo.Effect, go);
@@ -4498,6 +4513,7 @@ namespace Game.Spells
             playerTarget.SetSkill(skillid, damage, skillval, maxSkillVal);
         }
 
+        [SpellEffectHandler(SpellEffectName.SpiritHeal)]
         void EffectSpiritHeal()
         {
             Unit caster = GetCaster().ToUnit();
@@ -5001,6 +5017,13 @@ namespace Game.Spells
             if (unitTarget == null || !unitTarget.IsTypeId(TypeId.Player))
                 return;
 
+            // Classic 1.60 dual spec (checked in Spell.CheckCast): Activate Secondary Spec (63644) / Activate Primary Spec (63645)
+            if (m_spellInfo.Id == 63644 || m_spellInfo.Id == 63645)
+            {
+                unitTarget.ToPlayer().ActivateClassicSpecGroup(m_spellInfo.Id == 63644);
+                return;
+            }
+
             unitTarget.ToPlayer().ActivateTalentGroup((int)effectInfo.BasePoints);
         }
 
@@ -5020,7 +5043,7 @@ namespace Game.Spells
             switch (m_spellInfo.Id)
             {
                 case 91604: // Restricted Flight Area
-                    player.GetSession().SendNotification(CypherStrings.ZoneNoflyzone);
+                    player.GetSession().SendNotification(ForeverStrings.ZoneNoflyzone);
                     break;
                 default:
                     break;

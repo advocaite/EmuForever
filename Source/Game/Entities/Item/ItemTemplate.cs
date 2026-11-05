@@ -1,4 +1,4 @@
-﻿// Copyright (c) CypherCore <http://github.com/CypherCore> All rights reserved.
+﻿// Copyright (c) EmuForever <http://github.com/EmuForever> All rights reserved.
 // Licensed under the GNU GENERAL PUBLIC LICENSE. See LICENSE file in the project root for full license information.
 
 using Framework.Constants;
@@ -6,6 +6,7 @@ using Game.DataStorage;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 
 namespace Game.Entities
@@ -174,53 +175,40 @@ namespace Game.Entities
             if (GetClass() != ItemClass.Weapon || quality > ItemQuality.Artifact)
                 return 0.0f;
 
-            float dps = 0.0f;
             var itemLevel = GetItemLevel();
+            float Dps(DB6Storage<int, ItemDamageRecord> table) => table.LookupByKey(itemLevel)?.Quality[(int)quality] ?? 0.0f;
+            float RangedDps(DB6Storage<int, ItemDamageRangedRecord> table) => table.LookupByKey(itemLevel)?.Quality[(int)quality] ?? 0.0f;
 
             switch (GetInventoryType())
             {
                 case InventoryType.Ammo:
-                    dps = CliDB.ItemDamageAmmoStorage.LookupByKey(itemLevel).Quality[(int)quality];
-                    break;
+                    return Dps(CliDB.ItemDamageAmmoStorage);
                 case InventoryType.Weapon2Hand:
-                    if (HasFlag(ItemFlags2.CasterWeapon))
-                        dps = CliDB.ItemDamageTwoHandCasterStorage.LookupByKey(itemLevel).Quality[(int)quality];
-                    else
-                        dps = CliDB.ItemDamageTwoHandStorage.LookupByKey(itemLevel).Quality[(int)quality];
-                    break;
+                    return Dps(HasFlag(ItemFlags2.CasterWeapon) ? CliDB.ItemDamageTwoHandCasterStorage : CliDB.ItemDamageTwoHandStorage);
                 case InventoryType.Ranged:
                 case InventoryType.Thrown:
                 case InventoryType.RangedRight:
+                    // 1.60.1: ranged weapons have their own tables (ItemDamageRanged / Thrown / Wand.db2), lower than the two-hand ones
                     switch (GetSubClass().Weapon)
                     {
                         case ItemSubClassWeapon.Wand:
-                            dps = CliDB.ItemDamageOneHandCasterStorage.LookupByKey(itemLevel).Quality[(int)quality];
-                            break;
+                            return RangedDps(CliDB.ItemDamageWandStorage);
+                        case ItemSubClassWeapon.Thrown:
+                            return RangedDps(CliDB.ItemDamageThrownStorage);
                         case ItemSubClassWeapon.Bow:
                         case ItemSubClassWeapon.Gun:
                         case ItemSubClassWeapon.Crossbow:
-                            if (HasFlag(ItemFlags2.CasterWeapon))
-                                dps = CliDB.ItemDamageTwoHandCasterStorage.LookupByKey(itemLevel).Quality[(int)quality];
-                            else
-                                dps = CliDB.ItemDamageTwoHandStorage.LookupByKey(itemLevel).Quality[(int)quality];
-                            break;
+                            return RangedDps(CliDB.ItemDamageRangedStorage);
                         default:
-                            break;
+                            return 0.0f;
                     }
-                    break;
                 case InventoryType.Weapon:
                 case InventoryType.WeaponMainhand:
                 case InventoryType.WeaponOffhand:
-                    if (HasFlag(ItemFlags2.CasterWeapon))
-                        dps = CliDB.ItemDamageOneHandCasterStorage.LookupByKey(itemLevel).Quality[(int)quality];
-                    else
-                        dps = CliDB.ItemDamageOneHandStorage.LookupByKey(itemLevel).Quality[(int)quality];
-                    break;
+                    return Dps(HasFlag(ItemFlags2.CasterWeapon) ? CliDB.ItemDamageOneHandCasterStorage : CliDB.ItemDamageOneHandStorage);
                 default:
-                    break;
+                    return 0.0f;
             }
-
-            return dps;
         }
 
         public void GetDamage(out float minDamage, out float maxDamage)
@@ -288,19 +276,67 @@ namespace Game.Entities
         public int GetRequiredSpell() { return ExtendedData.RequiredAbility; }
         public int GetRequiredReputationFaction() { return ExtendedData.MinFactionID; }
         public ReputationRank GetRequiredReputationRank() { return ExtendedData.MinReputation; }
-        public int GetResistance(SpellSchools school) { return 0; } // no Resistances column in 1.60.1 ItemSparse
+        // 1.60.1 ItemSparse has no resistance columns. Physical armor is derived from the item's level, quality,
+        // armor type and slot, as the client tooltip does; magic resistances are not item data in this client.
+        public int GetResistance(SpellSchools school) { return school == SpellSchools.Normal ? GetArmor() : 0; }
+
+        static Dictionary<int, ItemArmorTotalRecord> _armorTotals;
+        static Dictionary<int, ItemArmorShieldRecord> _armorShields;
+
+        // Tooltip armor of an armor piece or shield (EmuForever ItemTemplate::GetArmor). The total/shield tables
+        // are keyed by their ItemLevel column; concurrent first use builds the same lookup twice, harmlessly.
+        public int GetArmor()
+        {
+            if (GetClass() != ItemClass.Armor)
+                return 0;
+            int quality = (int)(GetQuality() == ItemQuality.Heirloom ? ItemQuality.Rare : GetQuality());
+            if (quality > (int)ItemQuality.Artifact)
+                return 0;
+            int level = GetItemLevel();
+            var subclass = GetSubClass().Armor;
+            if (subclass == ItemSubClassArmor.Shield)
+            {
+                _armorShields ??= ByItemLevel(CliDB.ItemArmorShieldStorage.Values, record => record.ItemLevel);
+                return _armorShields.TryGetValue(level, out var shield) ? (int)(shield.Quality[quality] + 0.5f) : 0;
+            }
+            if (subclass < ItemSubClassArmor.Cloth || subclass > ItemSubClassArmor.Plate)
+                return 0;
+            _armorTotals ??= ByItemLevel(CliDB.ItemArmorTotalStorage.Values, record => record.ItemLevel);
+            // Retail keys quality multipliers by item level; this client ships one row for every level.
+            var armorQuality = CliDB.ItemArmorQualityStorage.LookupByKey(level) ?? CliDB.ItemArmorQualityStorage.Values.FirstOrDefault();
+            var location = CliDB.ArmorLocationStorage.LookupByKey((int)(GetInventoryType() == InventoryType.Robe ? InventoryType.Chest : GetInventoryType()));
+            if (armorQuality == null || location == null || !_armorTotals.TryGetValue(level, out var total))
+                return 0;
+            float perLevel, modifier;
+            switch (subclass)
+            {
+                case ItemSubClassArmor.Cloth: perLevel = total.Cloth; modifier = location.Clothmodifier; break;
+                case ItemSubClassArmor.Leather: perLevel = total.Leather; modifier = location.Leathermodifier; break;
+                case ItemSubClassArmor.Mail: perLevel = total.Mail; modifier = location.Chainmodifier; break;
+                default: perLevel = total.Plate; modifier = location.Platemodifier; break;
+            }
+            return (int)(armorQuality.QualityMod[quality] * perLevel * modifier + 0.5f);
+        }
+
+        static Dictionary<int, T> ByItemLevel<T>(IEnumerable<T> records, Func<T, int> level)
+        {
+            var map = new Dictionary<int, T>();
+            foreach (var record in records)
+                map.TryAdd(level(record), record);
+            return map;
+        }
         public int GetMaxCount() { return ExtendedData.MaxCount; }
         public byte GetContainerSlots() { return ExtendedData.ContainerSlots; }
-        public ItemModType GetStatModifierBonusStat(int index) { Cypher.Assert(index < ItemConst.MaxStats); return ExtendedData.StatModifierBonusStat(index); }
+        public ItemModType GetStatModifierBonusStat(int index) { Forever.Assert(index < ItemConst.MaxStats); return ExtendedData.StatModifierBonusStat(index); }
         /// <summary> 1.60.1 (retail-style): stat amount = RandPropPoints(itemLevel) * StatPercentEditor / 10000 </summary>
         public short GetStatModifierBonusAmount(int index)
         {
-            Cypher.Assert(index < ItemConst.MaxStats);
+            Forever.Assert(index < ItemConst.MaxStats);
             int randomPropPoints = ItemEnchantmentManager.GetRandomPropertyPoints(GetItemLevel(), GetQuality(), GetInventoryType());
             return (short)Math.Round(ExtendedData.StatPercentEditor[index] * randomPropPoints * 0.0001f);
         }
-        public int GetStatPercentEditor(int index) { Cypher.Assert(index < ItemConst.MaxStats); return ExtendedData.StatPercentEditor[index]; }
-        public float GetStatPercentageOfSocket(int index) { Cypher.Assert(index < ItemConst.MaxStats); return ExtendedData.StatPercentageOfSocket[index]; }
+        public int GetStatPercentEditor(int index) { Forever.Assert(index < ItemConst.MaxStats); return ExtendedData.StatPercentEditor[index]; }
+        public float GetStatPercentageOfSocket(int index) { Forever.Assert(index < ItemConst.MaxStats); return ExtendedData.StatPercentageOfSocket[index]; }
         public int GetScalingStatContentTuning() { return ExtendedData.ContentTuningID; }
         // 1.60.1 has no ScalingStatDistribution/ScalingStatValues
         public ushort GetScalingStatDistributionID() { return 0; }
@@ -356,14 +392,8 @@ namespace Game.Entities
 
         public SocketType GetSocketType(int index)
         {
-            Cypher.Assert(index < ItemConst.MaxGemSockets);
+            Forever.Assert(index < ItemConst.MaxGemSockets);
             return (SocketType)ExtendedData.SocketType[index];
-        }
-
-        public int GetShieldBlockValue(int itemLevel)
-        {
-            var blockEntry = CliDB.ShieldBlockRegularGameTable.GetRow(itemLevel);
-            return CliDB.GetShieldBlockRegularColumnForQuality(blockEntry, GetQuality());
         }
 
         public int GetSocketBonus() { return ExtendedData.SocketMatchEnchantmentId; }
